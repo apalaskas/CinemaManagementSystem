@@ -7,6 +7,8 @@ Applies to: all implementation, build, test, database, and developer-environment
 
 At the architecture-decision inspection on 2026-08-14, the workspace contained only the 17 specification artifacts under `docs/specification`. There was no source code, build file, root guidance file, or existing implementation documentation. The supplied directory was not a Git worktree (`git status` reported no `.git` repository). This observation does not authorize a future agent to initialize, commit, push, or otherwise alter Git state.
 
+At the completion audit on 2026-08-15, the workspace was a clean Git worktree on `main` before the audit documentation update. Its tracked project content consisted only of the same 17 immutable specification artifacts, `AGENTS.md`, and the four permanent implementation-guidance documents. No application source, build file, database migration, business test, or container artifact existed. This later observation records current evidence without changing the Git restrictions above.
+
 ## Required platform
 
 - Java JDK **26**, without preview features. Compile with release 26 and do not use `--enable-preview`.
