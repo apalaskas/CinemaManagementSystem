@@ -3,6 +3,7 @@ package com.example.cinema.idempotency;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -17,10 +18,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 
 import com.example.cinema.common.config.CinemaProperties;
 import com.example.cinema.common.error.ConflictException;
@@ -67,9 +70,11 @@ class IdempotencyManagerTest {
         Map<String, Object> request = Map.of("name", "Festival");
         when(repository.findForUpdate(userId, "key-1")).thenReturn(Optional.empty());
         when(repository.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        @SuppressWarnings("unchecked")
+        Supplier<StoredCommandResponse> command = mock(Supplier.class);
+        when(command.get()).thenReturn(new StoredCommandResponse(201, "{\"id\":\"one\"}"));
 
-        IdempotencyResult result = manager.execute("PROGRAM.CREATE", "key-1", request,
-                () -> new StoredCommandResponse(201, "{\"id\":\"one\"}"));
+        IdempotencyResult result = manager.execute("PROGRAM.CREATE", "key-1", request, command);
 
         assertThat(result).isEqualTo(new IdempotencyResult(201, "{\"id\":\"one\"}", false));
         ArgumentCaptor<IdempotencyRecordEntity> completed = ArgumentCaptor.forClass(IdempotencyRecordEntity.class);
@@ -78,6 +83,12 @@ class IdempotencyManagerTest {
         assertThat(completed.getValue().getResponseStatus()).isEqualTo(201);
         assertThat(completed.getValue().getResponseBody()).isEqualTo("{\"id\":\"one\"}");
         assertThat(completed.getValue().getExpiresAt()).isEqualTo(now.plus(Duration.ofHours(24)));
+
+        InOrder flow = inOrder(repository, command);
+        flow.verify(repository).findForUpdate(userId, "key-1");
+        flow.verify(repository).saveAndFlush(any(IdempotencyRecordEntity.class));
+        flow.verify(command).get();
+        flow.verify(repository).save(any(IdempotencyRecordEntity.class));
     }
 
     @Test

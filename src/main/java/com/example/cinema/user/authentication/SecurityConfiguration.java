@@ -52,7 +52,7 @@ public class SecurityConfiguration {
                         .requestMatchers(HttpMethod.GET, "/api/v1/programs/**", "/api/v1/screenings/**").permitAll()
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().denyAll())
-                .addFilterAfter(rateLimitFilter, BasicAuthenticationFilter.class)
+                .addFilterBefore(rateLimitFilter, BasicAuthenticationFilter.class)
                 .anonymous(Customizer.withDefaults());
         return http.build();
     }

@@ -35,6 +35,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.FilterChainProxy;
+import org.springframework.security.web.authentication.www.BasicAuthenticationFilter;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -73,6 +75,7 @@ import com.example.cinema.screening.api.ScreeningController;
 import com.example.cinema.screening.service.ScreeningPreparationService;
 import com.example.cinema.screening.service.ScreeningSubmissionService;
 
+import jakarta.servlet.Filter;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -104,6 +107,7 @@ class InfrastructureWebSecurityTest {
 
     @Autowired MockMvc mockMvc;
     @Autowired PasswordEncoder passwordEncoder;
+    @Autowired FilterChainProxy springSecurityFilterChain;
     @MockitoBean UserRepository userRepository;
     @MockitoBean ProgramManagementService programManagementService;
     @MockitoBean ProgramLifecycleService programLifecycleService;
@@ -174,6 +178,17 @@ class InfrastructureWebSecurityTest {
                         .header("Idempotency-Key", "submit-key"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
+    }
+
+    @Test
+    void appliesRateLimitingBeforeHttpBasicAuthenticationAsRequiredBySd2() {
+        List<Filter> filters = springSecurityFilterChain.getFilters(
+                "/api/v1/screenings/dddddddd-dddd-dddd-dddd-dddddddddddd/submit");
+
+        int rateLimitIndex = indexOf(filters, RateLimitFilter.class);
+        int basicAuthenticationIndex = indexOf(filters, BasicAuthenticationFilter.class);
+        org.assertj.core.api.Assertions.assertThat(rateLimitIndex).isGreaterThanOrEqualTo(0);
+        org.assertj.core.api.Assertions.assertThat(basicAuthenticationIndex).isGreaterThan(rateLimitIndex);
     }
 
     @Test
@@ -281,6 +296,15 @@ class InfrastructureWebSecurityTest {
     }
 
     record NameRequest(@NotBlank String name) { }
+
+    private static int indexOf(List<Filter> filters, Class<? extends Filter> type) {
+        for (int index = 0; index < filters.size(); index++) {
+            if (type.isInstance(filters.get(index))) {
+                return index;
+            }
+        }
+        return -1;
+    }
 
     @TestConfiguration(proxyBeanMethods = false)
     static class InfrastructureTestConfiguration {

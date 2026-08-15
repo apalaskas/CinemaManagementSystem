@@ -5,8 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -32,9 +33,15 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
+import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionInterceptor;
 
 import com.example.cinema.audit.service.AuditLoggingService;
 import com.example.cinema.common.error.FieldValidationException;
@@ -148,11 +155,22 @@ class ScreeningSubmissionServiceTest {
                 .containsEntry("screeningId", SCREENING_ID)
                 .containsEntry("expectedVersion", 2L);
 
-        InOrder flow = inOrder(screeningRepository, programRepository);
+        InOrder flow = inOrder(authorization, screeningRepository, idempotencyManager,
+                programRepository, auditLoggingService);
+        flow.verify(authorization).currentUser();
         flow.verify(screeningRepository).findActiveById(SCREENING_ID);
+        flow.verify(authorization).requireOwner(screening);
+        flow.verify(authorization).requireSubmitter(PROGRAM_ID);
+        flow.verify(idempotencyManager).execute(
+                eq("SCREENING.SUBMIT"), eq("submit-key"), any(), any());
         flow.verify(screeningRepository).findActiveByIdForUpdate(SCREENING_ID);
         flow.verify(programRepository).findById(PROGRAM_ID);
+        flow.verify(authorization).requireOwner(screening);
+        flow.verify(authorization).requireSubmitter(PROGRAM_ID);
         flow.verify(screeningRepository).saveAndFlush(screening);
+        flow.verify(auditLoggingService).recordUserAction(
+                eq(USER_ID), eq("SCREENING_SUBMITTED"), eq("SCREENING"), eq(SCREENING_ID),
+                any(), any(), eq(null));
     }
 
     @ParameterizedTest
@@ -301,6 +319,22 @@ class ScreeningSubmissionServiceTest {
     }
 
     @Test
+    void pessimisticLockConflictStopsBeforeStateChangeAuditOrStoredSuccess() {
+        ScreeningEntity screening = completeScreening(ProgramState.SUBMISSION, 0);
+        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(screening));
+        when(screeningRepository.findActiveByIdForUpdate(SCREENING_ID))
+                .thenThrow(new PessimisticLockingFailureException("simulated lock timeout"));
+
+        assertThatThrownBy(() -> service.submit(SCREENING_ID, 0, "lock-conflict"))
+                .isInstanceOf(PessimisticLockingFailureException.class);
+
+        assertThat(screening.getState()).isEqualTo(ScreeningState.CREATED);
+        verify(programRepository, never()).findById(any());
+        verify(screeningRepository, never()).saveAndFlush(any());
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     void candidateOverbookingIsAllowedWithoutAnyFinalScheduleConflictQuery() {
         ScreeningEntity screening = completeScreening(ProgramState.SUBMISSION, 0);
         set(screening, "candidateAuditoriumName", "Already Requested Hall");
@@ -387,10 +421,79 @@ class ScreeningSubmissionServiceTest {
     }
 
     @Test
+    void auditFailureMarksTheOuterSubmissionTransactionForRollback() {
+        ScreeningEntity screening = completeScreening(ProgramState.SUBMISSION, 0);
+        allowSubmission(screening, program(ProgramState.SUBMISSION));
+        doThrow(new IllegalStateException("audit unavailable")).when(auditLoggingService)
+                .recordUserAction(any(), any(), any(), any(), any(), any(), any());
+
+        TransactionProbe transaction = transactionalProxy();
+
+        assertThatThrownBy(() -> transaction.proxy().submit(SCREENING_ID, 0, "audit-rollback"))
+                .isInstanceOf(IllegalStateException.class);
+        verify(transaction.manager()).rollback(transaction.status());
+        verify(transaction.manager(), never()).commit(any());
+    }
+
+    @Test
+    void successfulSubmissionCommitsTheOuterTransaction() {
+        ScreeningEntity screening = completeScreening(ProgramState.SUBMISSION, 0);
+        allowSubmission(screening, program(ProgramState.SUBMISSION));
+        TransactionProbe transaction = transactionalProxy();
+
+        ScreeningCommandResult<ScreeningDetailResponse> result =
+                transaction.proxy().submit(SCREENING_ID, 0, "commit-success");
+
+        assertThat(result.body().state()).isEqualTo(ScreeningState.SUBMITTED);
+        verify(transaction.manager()).commit(transaction.status());
+        verify(transaction.manager(), never()).rollback(any());
+    }
+
+    @Test
+    void idempotencyResultStorageFailureRollsBackStateChangeAndAudit() {
+        ScreeningEntity screening = completeScreening(ProgramState.SUBMISSION, 0);
+        allowSubmission(screening, program(ProgramState.SUBMISSION));
+        doAnswer(invocation -> {
+            Supplier<StoredCommandResponse> command = invocation.getArgument(3);
+            command.get();
+            throw new DataIntegrityViolationException("simulated idempotency result failure");
+        }).when(idempotencyManager).execute(anyString(), anyString(), any(), any());
+        TransactionProbe transaction = transactionalProxy();
+
+        assertThatThrownBy(() -> transaction.proxy().submit(SCREENING_ID, 0, "result-rollback"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        verify(auditLoggingService).recordUserAction(
+                eq(USER_ID), eq("SCREENING_SUBMITTED"), eq("SCREENING"), eq(SCREENING_ID),
+                any(), any(), eq(null));
+        verify(transaction.manager()).rollback(transaction.status());
+        verify(transaction.manager(), never()).commit(any());
+    }
+
+    @Test
     void submissionDeclaresTheRequiredTransactionBoundary() throws Exception {
         assertThat(ScreeningSubmissionService.class
                 .getMethod("submit", UUID.class, long.class, String.class)
                 .getAnnotation(Transactional.class)).isNotNull();
+    }
+
+    private TransactionProbe transactionalProxy() {
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        TransactionStatus transactionStatus = mock(TransactionStatus.class);
+        when(transactionManager.getTransaction(any())).thenReturn(transactionStatus);
+        ProxyFactory factory = new ProxyFactory(service);
+        factory.setProxyTargetClass(true);
+        TransactionInterceptor interceptor = new TransactionInterceptor();
+        interceptor.setTransactionManager(transactionManager);
+        interceptor.setTransactionAttributeSource(new AnnotationTransactionAttributeSource());
+        factory.addAdvice(interceptor);
+        return new TransactionProbe(
+                (ScreeningSubmissionService) factory.getProxy(), transactionManager, transactionStatus);
+    }
+
+    private record TransactionProbe(
+            ScreeningSubmissionService proxy,
+            PlatformTransactionManager manager,
+            TransactionStatus status) {
     }
 
     private void assertSubmissionFieldError(ScreeningEntity screening, String expectedField) {
