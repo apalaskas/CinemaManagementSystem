@@ -32,12 +32,19 @@ cinema:
     default-size: 20
     max-size: 100
   rate-limit:
+    max-tracked-keys: ${RATE_LIMIT_MAX_TRACKED_KEYS:10000}
+    entry-ttl: ${RATE_LIMIT_ENTRY_TTL:15m}
     screening-submission:
-      capacity: 10
-      refill-period: 1m
+      capacity: ${RATE_LIMIT_SCREENING_SUBMISSION_CAPACITY:10}
+      refill-period: ${RATE_LIMIT_SCREENING_SUBMISSION_WINDOW:1m}
+    creation:
+      capacity: ${RATE_LIMIT_CREATION_CAPACITY:30}
+      refill-period: ${RATE_LIMIT_CREATION_WINDOW:1m}
     program-search:
-      capacity: 120
-      refill-period: 1m
+      capacity: ${RATE_LIMIT_PROGRAM_SEARCH_CAPACITY:120}
+      refill-period: ${RATE_LIMIT_PROGRAM_SEARCH_WINDOW:1m}
     screening-search:
-      capacity: 120
-      refill-period: 1m
+      capacity: ${RATE_LIMIT_SCREENING_SEARCH_CAPACITY:120}
+      refill-period: ${RATE_LIMIT_SCREENING_SEARCH_WINDOW:1m}
+  idempotency:
+    retention: ${IDEMPOTENCY_RETENTION:24h}

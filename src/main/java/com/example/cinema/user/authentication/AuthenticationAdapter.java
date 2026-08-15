@@ -4,5 +4,5 @@ import java.util.Optional;
 
 public interface AuthenticationAdapter {
 
-    Optional<AuthenticatedUserIdentity> findByUsername(String username);
+    Optional<AuthenticatedUserIdentity> authenticate(String username, CharSequence rawPassword);
 }

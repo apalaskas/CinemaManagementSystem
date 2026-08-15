@@ -23,14 +23,16 @@ This is a backend contract only. JPA entities are never serialized. Every endpoi
 
 ### Idempotency
 
-`Idempotency-Key` is required on every non-idempotent command: all command `POST` endpoints and command `PATCH` endpoints below. A nonblank opaque value of at most 255 characters is recommended; never log it with credentials.
+`Idempotency-Key` is required on every non-idempotent command: all command `POST` endpoints and command `PATCH` endpoints below. Its accepted syntax is 1-255 ASCII characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, `:`, `/`, `+`, `=`, and `-`. Never log the key or credentials.
 
-The idempotency identity is `(authenticated user ID, canonical operation, key)`. The request hash covers method, canonical route/IDs, relevant headers including concurrency version, and normalized request content, but not credentials.
+The idempotency identity is `(authenticated user ID, canonical operation, key)`. Canonical operation names are uppercase stable identifiers of at most 100 characters. `IdempotencyManager` hashes the operation plus canonical request content with SHA-256. The caller-provided canonical content must include route identifiers and the expected concurrency version where they affect the mutation; it never includes credentials.
 
-- Same identity and same hash after a successful commit: replay the original status, safe headers, and response body; do not execute again.
+- Same identity and same hash after a successful commit: replay the original status and response body; do not execute again.
 - Same identity and different hash: `409 IDEMPOTENCY_KEY_REUSED`.
 - A concurrent in-progress duplicate is resolved deterministically; it may wait briefly for the first transaction or return `409 IDEMPOTENCY_REQUEST_IN_PROGRESS`, but must never double-execute.
 - Failed/rolled-back operations are not stored as successful replay results.
+
+Records expire according to `cinema.idempotency.retention` (24 hours by default). An expired identity may be claimed as new. Successful result storage and the domain mutation share the caller's transaction; authentication/authorization failures are not successful replay results.
 
 `DELETE` is kept HTTP-idempotent and does not require this header: repeating the same authorized deletion/withdrawal must not create another mutation or audit event.
 
@@ -71,15 +73,18 @@ Use a safe Problem Details derivative:
   "status": 409,
   "detail": "The screening conflicts with an existing scheduled interval.",
   "instance": "/api/v1/screenings/…/schedule",
-  "code": "SCHEDULE_CONFLICT",
+  "errorCode": "SCHEDULING_CONFLICT",
+  "timestamp": "2026-08-15T10:15:30Z",
   "fieldErrors": [
-    { "field": "endTime", "code": "INVALID_INTERVAL", "message": "endTime must be after startTime" }
+    { "field": "endTime", "message": "endTime must be after startTime" }
   ],
   "traceId": "safe-correlation-id"
 }
 ```
 
-Omit `fieldErrors` when irrelevant. Safe status mapping is: `400` malformed/validation, `401` unauthenticated, `403` authenticated but forbidden, `404` missing or concealed, `409` lifecycle/concurrency/uniqueness/schedule/idempotency conflict, and `429` rate limit. Never expose stack traces, exception class names, SQL, relation/column names, entity dumps, password data, Basic credentials, or sensitive existence information.
+Every error includes `status`, `title`, `detail`, `errorCode`, `timestamp`, `traceId`, and `instance`; omit `fieldErrors` when irrelevant. Safe status mapping is: `400` malformed/validation, `401` unauthenticated, `403` authenticated but forbidden, `404` missing or concealed, `409` lifecycle/concurrency/uniqueness/schedule/idempotency conflict, and `429` rate limit. A rate-limit response includes `Retry-After` in seconds and `retryable: true`. Never expose stack traces, exception class names, SQL, relation/column names, entity dumps, password data, Basic credentials, or sensitive existence information.
+
+Clients may send `X-Correlation-ID` using 1-100 letters, digits, `.`, `_`, or `-`. Invalid/missing values are replaced with a generated UUID. Every response echoes the effective ID; server logs correlate internal failures with it without logging Authorization, password, or idempotency-key values.
 
 ## Shared DTO fields
 
@@ -291,6 +296,6 @@ UC-S5 / FR-11. Anonymous allowed. Load Screening with Program and return the cal
 
 ## Rate-limit and audit expectations
 
-Rate limiting is configuration-driven and must cover, at minimum, Screening submission and both search collections. Return `429` with safe retry metadata; limits are not business constants in DTOs.
+Rate limiting is configuration-driven and covers Screening submission, Program/Screening creation, and both search collections. The single-instance fixed-window limiter keys authenticated traffic by user ID and anonymous traffic by the directly resolved client address, expires idle keys, and bounds its map. Return `429` with `Retry-After` and safe retry metadata; limits are not business constants in DTOs. Multi-instance deployment requires a shared limiter, which is outside this academic deployment.
 
 The same transaction records critical create, delete/withdraw, role change, lifecycle/state change, handler assignment, review, decision, final submission, automatic rejection, and scheduling actions. Audit fields follow NFR-4: UTC timestamp, actor user ID when applicable, action type, target entity ID/type, allowlisted old/new values where useful, and rejection reason. System-triggered automatic rejection may have a null actor plus an explicit system action type/reason.

@@ -1,2 +1,2 @@
-/** Idempotency infrastructure is reserved for Prompt 2; no table is created by V1. */
+/** Transactional command claim, deterministic hashing, replay, and expiry infrastructure backed by Flyway V2. */
 package com.example.cinema.idempotency;

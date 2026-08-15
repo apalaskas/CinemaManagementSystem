@@ -46,7 +46,19 @@ On Windows only, `mvnw.cmd` detects a non-ASCII workspace path and temporarily m
 
 The default test lifecycle remains database-independent. The `mysql-it` Maven profile reserves `*MySqlIT` for explicit real-MySQL verification through Failsafe; no such test is executed unless that profile is selected and a separately installed MySQL test schema is configured. Activating the profile requires the separate `MYSQL_TEST_DB_URL`, `MYSQL_TEST_DB_USERNAME`, and `MYSQL_TEST_DB_PASSWORD` environment variables and passes them to tests as the standard application database properties, preventing accidental fallback to the development schema. The application configuration reads `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD`, uses `cinema_management` only as the default local schema name, and contains no committed credentials.
 
-Flyway migration `V1__create_domain_schema.sql` creates the six conceptual relations only. The `idempotency_record` infrastructure table is deliberately deferred to the idempotency implementation task; Flyway schema history remains framework-owned infrastructure. The initial JPA model and repositories are persistence scaffolding, not an implementation of the business use cases or REST endpoints.
+Flyway migration `V1__create_domain_schema.sql` creates the six conceptual relations only. Flyway migration `V2__create_idempotency_record.sql` adds the `idempotency_record` infrastructure table; Flyway schema history remains framework-owned infrastructure. The domain JPA model and repositories remain persistence scaffolding, not an implementation of the business use cases or REST endpoints.
+
+## Implemented shared infrastructure (Prompt 2)
+
+The standalone security adapter now authenticates normalized usernames against `cms_user` with BCrypt and stateless HTTP Basic. Credential hashes remain confined to the adapter and never enter the authenticated principal. Public Program/Screening GET routes can be anonymous; `/api/v1` mutations require authentication, with contextual role/ownership/handler authorization supplied by `ContextAwareAuthorizationService` for later business services.
+
+The default database-independent suite covers the common ProblemDetail error contract, correlation-ID propagation, fixed-window rate limiting, idempotency claim/hash/replay behavior, and audit snapshot sanitization/transaction participation. Spring Boot 4's modular `spring-boot-starter-webmvc-test` is test-scoped because MockMvc web slices are no longer supplied transitively by the general test starter.
+
+On JDK 26, Maven Surefire starts Mockito's inline mock maker through an explicit `-javaagent`. During `process-test-classes`, Maven Dependency Plugin resolves the Spring Boot-managed `mockito-core` version and copies it to the stable project-local path `target/test-agent/mockito-core-agent.jar`; Surefire uses that copy instead of a potentially non-ASCII user-profile/Maven-repository path. This is the documented Java 21+ explicit-agent approach and avoids unsupported runtime self-attachment. The configuration is machine-independent and Surefire prepends the late-evaluated `@{argLine}` value so existing or future test JVM arguments are retained; the project defines that property as empty by default.
+
+Rate limits are configured under `cinema.rate-limit` for Program search, Screening search, creation, and Screening submission. The in-process map has an explicit maximum key count and idle-entry TTL. Anonymous callers are keyed by the servlet container's directly resolved remote address; untrusted forwarding headers are not accepted implicitly. Authenticated callers are keyed by domain user ID. This implementation is suitable only for the single-instance academic deployment. A distributed deployment must replace it with a shared limiter; Redis, containers, and other distributed infrastructure are intentionally absent.
+
+Idempotency retention is configured by `cinema.idempotency.retention` (environment override `IDEMPOTENCY_RETENTION`, default 24 hours). Rate-limit capacities/windows, map bound, and entry TTL likewise have environment overrides in `application.yml`. No secret value is committed.
 
 ## Persistence baseline
 
@@ -78,7 +90,7 @@ Application and JDBC configuration must normalize timestamps to UTC. Local devel
 - Program name uniqueness is case-insensitive and is guaranteed by the database collation plus a unique constraint. A pre-insert query may improve the message but is not the integrity mechanism.
 - Candidate-auditorium overbooking is allowed. Conflict checks occur only against active `SCHEDULED` screenings using the final auditorium and final interval.
 
-The technical `idempotency_record` must uniquely identify `(authenticated user, operation, Idempotency-Key)`, retain a request hash and the original successful HTTP response data, and support atomic claim/replay behavior. Never store credentials or unredacted security-sensitive data in it.
+The technical `idempotency_record` uniquely identifies `(authenticated user, operation, Idempotency-Key)`, retains a SHA-256 request hash and the original successful HTTP status/body, and supports atomic claim/replay behavior. V2 stores UUIDs as `BINARY(16)`, the hash as `BINARY(32)`, case-sensitive ASCII operation/key values, constrained `IN_PROGRESS`/`COMPLETED` status, and indexed expiry. Never store credentials or unredacted security-sensitive data in it.
 
 ## Expected dependency direction
 

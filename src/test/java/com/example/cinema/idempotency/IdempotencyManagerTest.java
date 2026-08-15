@@ -1,0 +1,131 @@
+package com.example.cinema.idempotency;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import com.example.cinema.common.config.CinemaProperties;
+import com.example.cinema.common.error.ConflictException;
+import com.example.cinema.user.authentication.AuthenticatedUserIdentity;
+import com.example.cinema.user.authentication.CurrentUser;
+
+import tools.jackson.databind.ObjectMapper;
+
+class IdempotencyManagerTest {
+
+    private final UUID userId = UUID.randomUUID();
+    private final Instant now = Instant.parse("2026-01-01T00:00:00Z");
+    private final IdempotencyRecordRepository repository = mock(IdempotencyRecordRepository.class);
+    private final CurrentUser currentUser = mock(CurrentUser.class);
+    private final IdempotencyHasher hasher = new IdempotencyHasher(new ObjectMapper());
+    private final IdempotencyManager manager = new IdempotencyManager(
+            repository, hasher, currentUser, Clock.fixed(now, ZoneOffset.UTC), properties());
+
+    @BeforeEach
+    void authenticate() {
+        when(currentUser.require()).thenReturn(new AuthenticatedUserIdentity(userId, "alice", "Alice"));
+    }
+
+    @Test
+    void replaysCompletedResponseWithoutInvokingMutation() {
+        Map<String, Object> request = Map.of("name", "Festival");
+        IdempotencyRecordEntity record = record(hasher.hash("PROGRAM.CREATE", request));
+        record.complete(201, "{\"id\":\"one\"}");
+        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.of(record));
+        AtomicBoolean invoked = new AtomicBoolean();
+
+        IdempotencyResult result = manager.execute("PROGRAM.CREATE", "key-1", request, () -> {
+            invoked.set(true);
+            return new StoredCommandResponse(201, "different");
+        });
+
+        assertThat(result).isEqualTo(new IdempotencyResult(201, "{\"id\":\"one\"}", true));
+        assertThat(invoked).isFalse();
+    }
+
+    @Test
+    void rejectsSameKeyWithDifferentCanonicalPayload() {
+        IdempotencyRecordEntity record = record(hasher.hash("PROGRAM.CREATE", Map.of("name", "First")));
+        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.of(record));
+
+        assertThatThrownBy(() -> manager.execute("PROGRAM.CREATE", "key-1", Map.of("name", "Second"),
+                () -> new StoredCommandResponse(201, "{}")))
+                .isInstanceOf(ConflictException.class)
+                .extracting(error -> ((ConflictException) error).errorCode())
+                .isEqualTo("IDEMPOTENCY_KEY_REUSED");
+    }
+
+    @Test
+    void rejectsUnexpiredInProgressRecordAsRetryable() {
+        Map<String, Object> request = Map.of("name", "Festival");
+        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1"))
+                .thenReturn(Optional.of(record(hasher.hash("PROGRAM.CREATE", request))));
+
+        assertThatThrownBy(() -> manager.execute("PROGRAM.CREATE", "key-1", request,
+                () -> new StoredCommandResponse(201, "{}")))
+                .isInstanceOfSatisfying(ConflictException.class, error -> {
+                    assertThat(error.errorCode()).isEqualTo("IDEMPOTENCY_REQUEST_IN_PROGRESS");
+                    assertThat(error.retryable()).isTrue();
+                });
+    }
+
+    @Test
+    void commandFailureDoesNotStoreACompletedResult() {
+        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.empty());
+        when(repository.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertThatThrownBy(() -> manager.execute("PROGRAM.CREATE", "key-1", Map.of("name", "Festival"),
+                () -> { throw new IllegalStateException("mutation failed"); }))
+                .isInstanceOf(IllegalStateException.class);
+        verify(repository, never()).save(any(IdempotencyRecordEntity.class));
+    }
+
+    @Test
+    void canonicalHashDoesNotDependOnObjectFieldOrder() {
+        Map<String, Object> first = new LinkedHashMap<>();
+        first.put("b", 2);
+        first.put("a", 1);
+        Map<String, Object> second = new LinkedHashMap<>();
+        second.put("a", 1);
+        second.put("b", 2);
+
+        assertThat(hasher.hash("PROGRAM.CREATE", first)).isEqualTo(hasher.hash("PROGRAM.CREATE", second));
+    }
+
+    @Test
+    void cleanupUsesTheInjectedClock() {
+        when(repository.deleteExpired(now)).thenReturn(3);
+
+        assertThat(manager.cleanupExpiredRecords()).isEqualTo(3);
+        verify(repository).deleteExpired(now);
+    }
+
+    private IdempotencyRecordEntity record(byte[] hash) {
+        return new IdempotencyRecordEntity(
+                UUID.randomUUID(), userId, "PROGRAM.CREATE", "key-1", hash, now, now.plus(Duration.ofHours(24)));
+    }
+
+    private static CinemaProperties properties() {
+        var policy = new CinemaProperties.Policy(10, Duration.ofMinutes(1));
+        return new CinemaProperties(new CinemaProperties.Pagination(20, 100),
+                new CinemaProperties.RateLimit(policy, policy, policy, policy, 100, Duration.ofMinutes(5)),
+                new CinemaProperties.Idempotency(Duration.ofHours(24)));
+    }
+}

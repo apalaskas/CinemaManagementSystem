@@ -15,6 +15,7 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 
 import com.example.cinema.audit.domain.AuditLogEntity;
+import com.example.cinema.idempotency.IdempotencyRecordEntity;
 import com.example.cinema.program.domain.ProgramEntity;
 import com.example.cinema.program.domain.ProgramRoleEntity;
 import com.example.cinema.program.domain.ProgramRoleId;
@@ -55,6 +56,17 @@ class JpaMappingContractTest {
         assertBinaryUuid(ReviewEntity.class, "id");
         assertBinaryUuid(AuditLogEntity.class, "id");
         assertBinaryUuid(AuditLogEntity.class, "targetEntityId");
+        assertBinaryUuid(IdempotencyRecordEntity.class, "id");
+        assertBinaryUuid(IdempotencyRecordEntity.class, "userId");
+    }
+
+    @Test
+    void mapsIdempotencyAsInfrastructureRatherThanAConceptualDomainRelation() {
+        assertThat(tableName(IdempotencyRecordEntity.class)).isEqualTo("idempotency_record");
+        assertThat(List.<Class<?>>of(
+                UserEntity.class, ProgramEntity.class, ProgramRoleEntity.class,
+                ScreeningEntity.class, ReviewEntity.class, AuditLogEntity.class))
+                .doesNotContain(IdempotencyRecordEntity.class);
     }
 
     @Test
