@@ -6,6 +6,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -152,6 +154,7 @@ class ScreeningAssignmentReviewServiceTest {
                 .containsEntry("screeningId", SCREENING_ID)
                 .containsEntry("staffUserId", STAFF_ID)
                 .containsEntry("expectedVersion", 4L);
+        verify(authorization, org.mockito.Mockito.times(2)).requireProgrammer(PROGRAM_ID);
 
         InOrder order = inOrder(programRepository, userRepository, roleRepository,
                 screeningRepository, auditLoggingService);
@@ -173,6 +176,23 @@ class ScreeningAssignmentReviewServiceTest {
                 .isInstanceOf(ForbiddenException.class);
         verify(idempotencyManager, never()).execute(any(), any(), any(), any());
         verify(programRepository, never()).findByIdForUpdate(any());
+    }
+
+    @Test
+    void assignmentRechecksProgrammerAuthorizationAfterLockBeforeAnyMutation() {
+        ProgramEntity program = program(ProgramState.ASSIGNMENT);
+        ScreeningEntity screening = submitted(program, null, 0);
+        allowAssignment(program, screening, staff, ProgramRoleType.STAFF);
+        doNothing().doThrow(new ForbiddenException())
+                .when(authorization).requireProgrammer(PROGRAM_ID);
+
+        assertThatThrownBy(() -> service.assignHandler(
+                SCREENING_ID, 0, new ScreeningHandlerAssignmentRequest(STAFF_ID), "role-changed"))
+                .isInstanceOf(ForbiddenException.class);
+        verify(programRepository).findByIdForUpdate(PROGRAM_ID);
+        verify(screeningRepository, never()).findActiveByIdForUpdate(any());
+        verify(screeningRepository, never()).saveAndFlush(any());
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -312,6 +332,8 @@ class ScreeningAssignmentReviewServiceTest {
         assertThat(result.body().reviewer().userId()).isEqualTo(STAFF_ID);
         assertThat(result.body().createdAt()).isEqualTo(NOW);
         assertThat(screening.getState()).isEqualTo(ScreeningState.REVIEWED);
+        verify(authorization, org.mockito.Mockito.times(2)).requireHandler(screening);
+        verify(authorization, org.mockito.Mockito.times(2)).requireStaff(PROGRAM_ID);
 
         ArgumentCaptor<ReviewEntity> review = ArgumentCaptor.forClass(ReviewEntity.class);
         InOrder order = inOrder(programRepository, screeningRepository, reviewRepository, auditLoggingService);
@@ -381,6 +403,46 @@ class ScreeningAssignmentReviewServiceTest {
         assertThatThrownBy(() -> service.submitReview(SCREENING_ID, 0, validReview(), "wrong-reviewer"))
                 .isInstanceOf(ForbiddenException.class);
         verify(idempotencyManager, never()).execute(any(), any(), any(), any());
+    }
+
+    @Test
+    void reviewRechecksAssignedStaffAuthorizationAfterLocksBeforeAnyWrite() {
+        ProgramEntity program = program(ProgramState.REVIEW);
+        ScreeningEntity screening = submitted(program, staff, 0);
+        allowReview(program, screening);
+        asStaff();
+        doNothing().doThrow(new ForbiddenException())
+                .when(authorization).requireHandler(screening);
+
+        assertThatThrownBy(() -> service.submitReview(
+                SCREENING_ID, 0, validReview(), "handler-changed"))
+                .isInstanceOf(ForbiddenException.class);
+        verify(programRepository).findByIdForUpdate(PROGRAM_ID);
+        verify(screeningRepository).findActiveByIdForUpdate(SCREENING_ID);
+        verify(reviewRepository, never()).saveAndFlush(any());
+        verify(screeningRepository, never()).saveAndFlush(any());
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void reviewRejectsOptimisticAndPessimisticConcurrencyConflictsWithoutSideEffects() {
+        ProgramEntity program = program(ProgramState.REVIEW);
+        ScreeningEntity screening = submitted(program, staff, 2);
+        allowReview(program, screening);
+        asStaff();
+
+        assertThatThrownBy(() -> service.submitReview(
+                SCREENING_ID, 1, validReview(), "stale-review"))
+                .isInstanceOf(OptimisticConcurrencyConflictException.class);
+        verify(reviewRepository, never()).saveAndFlush(any());
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+
+        when(programRepository.findByIdForUpdate(PROGRAM_ID))
+                .thenThrow(new PessimisticLockingFailureException("busy"));
+        assertThatThrownBy(() -> service.submitReview(
+                SCREENING_ID, 2, validReview(), "busy-review"))
+                .isInstanceOf(PessimisticLockingFailureException.class);
+        verify(screeningRepository, org.mockito.Mockito.times(1)).findActiveByIdForUpdate(SCREENING_ID);
     }
 
     @ParameterizedTest
@@ -473,6 +535,45 @@ class ScreeningAssignmentReviewServiceTest {
         verify(transactionManager).rollback(transactionStatus);
         verify(transactionManager, never()).commit(transactionStatus);
         verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void idempotencyCompletionFailureRollsBackHandlerOrReviewCommand(boolean assignment) {
+        ProgramEntity program = program(assignment ? ProgramState.ASSIGNMENT : ProgramState.REVIEW);
+        ScreeningEntity screening = submitted(program, assignment ? null : staff, 0);
+        if (assignment) {
+            allowAssignment(program, screening, staff, ProgramRoleType.STAFF);
+        } else {
+            allowReview(program, screening);
+            asStaff();
+        }
+        doAnswer(invocation -> {
+            Supplier<StoredCommandResponse> command = invocation.getArgument(3);
+            command.get();
+            throw new IllegalStateException("idempotency completion failed");
+        }).when(idempotencyManager).execute(anyString(), anyString(), any(), any());
+
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        TransactionStatus transactionStatus = mock(TransactionStatus.class);
+        when(transactionManager.getTransaction(any())).thenReturn(transactionStatus);
+        ProxyFactory factory = new ProxyFactory(service);
+        factory.addAdvice(new TransactionInterceptor(
+                transactionManager, new AnnotationTransactionAttributeSource()));
+        ScreeningAssignmentReviewService proxy = (ScreeningAssignmentReviewService) factory.getProxy();
+
+        if (assignment) {
+            assertThatThrownBy(() -> proxy.assignHandler(
+                    SCREENING_ID, 0, new ScreeningHandlerAssignmentRequest(STAFF_ID), "idem-failure-handler"))
+                    .isInstanceOf(IllegalStateException.class);
+        } else {
+            assertThatThrownBy(() -> proxy.submitReview(
+                    SCREENING_ID, 0, validReview(), "idem-failure-review"))
+                    .isInstanceOf(IllegalStateException.class);
+        }
+        verify(auditLoggingService).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+        verify(transactionManager).rollback(transactionStatus);
+        verify(transactionManager, never()).commit(transactionStatus);
     }
 
     @Test
