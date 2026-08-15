@@ -10,7 +10,7 @@ import com.example.cinema.audit.domain.AuditLogEntity;
 
 public interface AuditLogRepository extends JpaRepository<AuditLogEntity, UUID> {
 
-    Page<AuditLogEntity> findByTargetEntityTypeAndTargetEntityIdOrderByCreatedAtDesc(
+    Page<AuditLogEntity> findByTargetEntityTypeAndTargetEntityIdOrderByCreatedAtDescIdDesc(
             String targetEntityType,
             UUID targetEntityId,
             Pageable pageable);

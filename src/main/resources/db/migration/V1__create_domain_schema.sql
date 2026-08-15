@@ -36,7 +36,8 @@ CREATE TABLE program (
     INDEX idx_program_creator (creator_user_id),
     INDEX idx_program_state_start_name (state, start_date, name, program_id),
     INDEX idx_program_end_date (end_date, program_id),
-    FULLTEXT INDEX idx_program_text_search (name, description)
+    FULLTEXT INDEX idx_program_name_search (name),
+    FULLTEXT INDEX idx_program_description_search (description)
 ) ENGINE = InnoDB
   DEFAULT CHARACTER SET = utf8mb4
   COLLATE = utf8mb4_0900_ai_ci;

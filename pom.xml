@@ -114,6 +114,34 @@
                 <plugins>
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>enforce-mysql-it-configuration</id>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <requireEnvironmentVariable>
+                                            <variableName>MYSQL_TEST_DB_URL</variableName>
+                                            <message>The mysql-it profile requires MYSQL_TEST_DB_URL for a dedicated local MySQL 8.4 test schema.</message>
+                                        </requireEnvironmentVariable>
+                                        <requireEnvironmentVariable>
+                                            <variableName>MYSQL_TEST_DB_USERNAME</variableName>
+                                            <message>The mysql-it profile requires MYSQL_TEST_DB_USERNAME.</message>
+                                        </requireEnvironmentVariable>
+                                        <requireEnvironmentVariable>
+                                            <variableName>MYSQL_TEST_DB_PASSWORD</variableName>
+                                            <message>The mysql-it profile requires MYSQL_TEST_DB_PASSWORD.</message>
+                                        </requireEnvironmentVariable>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-failsafe-plugin</artifactId>
                         <executions>
                             <execution>
@@ -125,6 +153,11 @@
                                     <includes>
                                         <include>**/*MySqlIT.java</include>
                                     </includes>
+                                    <systemPropertyVariables>
+                                        <DB_URL>${env.MYSQL_TEST_DB_URL}</DB_URL>
+                                        <DB_USERNAME>${env.MYSQL_TEST_DB_USERNAME}</DB_USERNAME>
+                                        <DB_PASSWORD>${env.MYSQL_TEST_DB_PASSWORD}</DB_PASSWORD>
+                                    </systemPropertyVariables>
                                 </configuration>
                             </execution>
                         </executions>

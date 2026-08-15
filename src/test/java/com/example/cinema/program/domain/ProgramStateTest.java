@@ -23,6 +23,7 @@ class ProgramStateTest {
     void permitsOnlyTheImmediateNextState() {
         assertThat(ProgramState.CREATED.canTransitionTo(ProgramState.SUBMISSION)).isTrue();
         assertThat(ProgramState.CREATED.canTransitionTo(ProgramState.ASSIGNMENT)).isFalse();
+        assertThat(ProgramState.CREATED.canTransitionTo(null)).isFalse();
         assertThat(ProgramState.ANNOUNCED.next()).isEmpty();
     }
 }

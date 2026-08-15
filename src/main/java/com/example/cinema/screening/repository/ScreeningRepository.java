@@ -69,7 +69,7 @@ public interface ScreeningRepository extends JpaRepository<ScreeningEntity, UUID
             select s from ScreeningEntity s
             where s.state = com.example.cinema.screening.domain.ScreeningState.SCHEDULED
               and s.deletedAt is null
-              and lower(s.finalAuditoriumName) = lower(:finalAuditoriumName)
+              and s.finalAuditoriumName = :finalAuditoriumName
               and s.id <> :excludedScreeningId
               and s.startTime < :requestedEnd
               and s.endTime > :requestedStart

@@ -18,6 +18,6 @@ public enum ProgramState {
     }
 
     public boolean canTransitionTo(ProgramState requestedState) {
-        return next().filter(requestedState::equals).isPresent();
+        return next().filter(nextState -> nextState == requestedState).isPresent();
     }
 }
