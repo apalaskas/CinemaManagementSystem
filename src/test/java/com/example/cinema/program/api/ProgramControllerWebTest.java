@@ -61,6 +61,7 @@ import com.example.cinema.program.domain.ProgramState;
 import com.example.cinema.program.service.ProgramCommandResult;
 import com.example.cinema.program.service.ProgramLifecycleService;
 import com.example.cinema.program.service.ProgramManagementService;
+import com.example.cinema.search.visibility.SearchAndVisibilityService;
 import com.example.cinema.user.authentication.CurrentUser;
 
 @WebMvcTest(controllers = ProgramController.class)
@@ -81,6 +82,7 @@ class ProgramControllerWebTest {
     @Autowired MockMvc mockMvc;
     @MockitoBean ProgramManagementService service;
     @MockitoBean ProgramLifecycleService lifecycleService;
+    @MockitoBean SearchAndVisibilityService searchAndVisibilityService;
     @MockitoBean InProcessRateLimiter rateLimiter;
     @MockitoBean CurrentUser currentUser;
     @MockitoBean ProblemResponseWriter problemResponseWriter;

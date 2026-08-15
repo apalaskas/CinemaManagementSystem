@@ -70,6 +70,26 @@ class RateLimitFilterTest {
         assertThat(repeated.getStatus()).isEqualTo(429);
     }
 
+    @Test
+    void appliesProgramSearchGroupToAnonymousCollectionGetAndReturns429() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+        InProcessRateLimiter limiter = new InProcessRateLimiter(clock, InProcessRateLimiterTest.properties(1, 10));
+        CurrentUser currentUser = mock(CurrentUser.class);
+        when(currentUser.optional()).thenReturn(Optional.empty());
+        RateLimitFilter filter = new RateLimitFilter(limiter, currentUser,
+                new ProblemResponseWriter(new ApiProblemFactory(clock), new ObjectMapper()));
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/programs");
+        request.setRemoteAddr("192.0.2.5");
+        filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
+        MockHttpServletResponse rejected = new MockHttpServletResponse();
+        filter.doFilter(request, rejected, new MockFilterChain());
+
+        assertThat(rejected.getStatus()).isEqualTo(429);
+        assertThat(rejected.getHeader("Retry-After")).isEqualTo("60");
+        assertThat(rejected.getContentAsString()).contains("RATE_LIMIT_EXCEEDED", "\"retryable\":true");
+    }
+
     private static MockHttpServletRequest request() {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/screenings/123/submit");
         request.setRemoteAddr("192.0.2.1");

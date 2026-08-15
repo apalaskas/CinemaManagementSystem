@@ -1,0 +1,235 @@
+package com.example.cinema.search.visibility;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.example.cinema.common.api.PageResponse;
+import com.example.cinema.common.config.CinemaProperties;
+import com.example.cinema.common.error.InvalidInputException;
+import com.example.cinema.common.error.ResourceNotFoundException;
+import com.example.cinema.program.api.FullProgramResponse;
+import com.example.cinema.program.api.ProgramRoleSummaryResponse;
+import com.example.cinema.program.api.ProgramScreeningSummaryResponse;
+import com.example.cinema.program.api.ProgramSearchParameters;
+import com.example.cinema.program.api.ProgramSortDirection;
+import com.example.cinema.program.api.ProgramViewResponse;
+import com.example.cinema.program.api.PublicProgramResponse;
+import com.example.cinema.program.api.UserSummaryResponse;
+import com.example.cinema.program.domain.ProgramEntity;
+import com.example.cinema.program.domain.ProgramRoleEntity;
+import com.example.cinema.program.domain.ProgramRoleType;
+import com.example.cinema.program.repository.ProgramRepository;
+import com.example.cinema.program.repository.ProgramRoleRepository;
+import com.example.cinema.program.repository.ProgramSearchCriteria;
+import com.example.cinema.program.repository.ProgramSearchPage;
+import com.example.cinema.program.repository.ProgrammerNameProjection;
+import com.example.cinema.screening.repository.ProgramAuditoriumProjection;
+import com.example.cinema.screening.repository.ProgramScreeningCountProjection;
+import com.example.cinema.screening.repository.ScreeningRepository;
+import com.example.cinema.user.authentication.CurrentUser;
+import com.example.cinema.user.domain.UserEntity;
+
+@Service
+public class SearchAndVisibilityService {
+
+    private final ProgramRepository programRepository;
+    private final ProgramRoleRepository roleRepository;
+    private final ScreeningRepository screeningRepository;
+    private final CurrentUser currentUser;
+    private final CinemaProperties.Pagination pagination;
+
+    public SearchAndVisibilityService(
+            ProgramRepository programRepository,
+            ProgramRoleRepository roleRepository,
+            ScreeningRepository screeningRepository,
+            CurrentUser currentUser,
+            CinemaProperties properties) {
+        this.programRepository = programRepository;
+        this.roleRepository = roleRepository;
+        this.screeningRepository = screeningRepository;
+        this.currentUser = currentUser;
+        this.pagination = properties.pagination();
+    }
+
+    @Transactional(readOnly = true)
+    public PageResponse<ProgramViewResponse> searchPrograms(ProgramSearchParameters parameters) {
+        ValidatedSearch search = validate(parameters);
+        UUID requesterUserId = currentUser.optional().map(identity -> identity.userId()).orElse(null);
+        ProgramSearchPage page = programRepository.searchVisible(
+                search.criteria(), requesterUserId, search.page(), search.size());
+        List<ProgramViewResponse> content = project(page.programs(), requesterUserId);
+        long pages = page.totalElements() == 0
+                ? 0
+                : ((page.totalElements() - 1) / search.size()) + 1;
+        return new PageResponse<>(search.page(), search.size(), page.totalElements(),
+                (int) Math.min(Integer.MAX_VALUE, pages), content);
+    }
+
+    @Transactional(readOnly = true)
+    public ProgramViewResponse viewProgram(UUID programId) {
+        UUID requesterUserId = currentUser.optional().map(identity -> identity.userId()).orElse(null);
+        ProgramEntity program = programRepository.findVisibleById(programId, requesterUserId)
+                .orElseThrow(ResourceNotFoundException::new);
+        return project(List.of(program), requesterUserId).getFirst();
+    }
+
+    private List<ProgramViewResponse> project(List<ProgramEntity> programs, UUID requesterUserId) {
+        if (programs.isEmpty()) {
+            return List.of();
+        }
+        List<UUID> programIds = programs.stream().map(ProgramEntity::getId).toList();
+        Set<UUID> managedProgramIds = requesterUserId == null
+                ? Set.of()
+                : Set.copyOf(roleRepository.findProgramIdsForUserRole(
+                        programIds, requesterUserId, ProgramRoleType.PROGRAMMER));
+
+        Map<UUID, List<String>> programmerNames = groupProgrammerNames(
+                roleRepository.findProgrammerNames(programIds));
+        Map<UUID, List<String>> auditoriumNames = groupAuditoriums(
+                screeningRepository.findDistinctScheduledAuditoriums(programIds));
+
+        List<UUID> managedIds = programIds.stream().filter(managedProgramIds::contains).toList();
+        Map<UUID, List<ProgramRoleSummaryResponse>> roles = managedIds.isEmpty()
+                ? Map.of()
+                : groupRoles(roleRepository.findAllWithUsersByProgramIds(managedIds));
+        Map<UUID, ProgramScreeningSummaryResponse> screeningSummaries = managedIds.isEmpty()
+                ? Map.of()
+                : screeningSummaries(screeningRepository.countActiveAndScheduledByProgramIds(managedIds));
+
+        List<ProgramViewResponse> result = new ArrayList<>(programs.size());
+        for (ProgramEntity program : programs) {
+            List<String> names = programmerNames.getOrDefault(program.getId(), List.of());
+            List<String> auditoriums = auditoriumNames.getOrDefault(program.getId(), List.of());
+            if (managedProgramIds.contains(program.getId())) {
+                UserEntity creator = program.getCreator();
+                result.add(new FullProgramResponse(
+                        program.getId(), program.getName(), program.getDescription(),
+                        program.getStartDate(), program.getEndDate(), names, auditoriums,
+                        program.getState(), program.getCreatedAt(), program.getVersion(),
+                        new UserSummaryResponse(
+                                creator.getId(), creator.getUsername(), creator.getFullName()),
+                        roles.getOrDefault(program.getId(), List.of()),
+                        screeningSummaries.getOrDefault(program.getId(), emptyScreeningSummary(program.getId()))));
+            } else {
+                result.add(new PublicProgramResponse(
+                        program.getId(), program.getName(), program.getDescription(),
+                        program.getStartDate(), program.getEndDate(), names, auditoriums));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static Map<UUID, List<String>> groupProgrammerNames(List<ProgrammerNameProjection> rows) {
+        Map<UUID, List<String>> grouped = new HashMap<>();
+        rows.forEach(row -> grouped.computeIfAbsent(row.getProgramId(), ignored -> new ArrayList<>())
+                .add(row.getFullName()));
+        return immutableLists(grouped);
+    }
+
+    private static Map<UUID, List<String>> groupAuditoriums(List<ProgramAuditoriumProjection> rows) {
+        Map<UUID, LinkedHashSet<String>> grouped = new HashMap<>();
+        rows.forEach(row -> grouped.computeIfAbsent(row.getProgramId(), ignored -> new LinkedHashSet<>())
+                .add(row.getAuditoriumName()));
+        Map<UUID, List<String>> result = new HashMap<>();
+        grouped.forEach((programId, values) -> result.put(programId, List.copyOf(values)));
+        return Map.copyOf(result);
+    }
+
+    private static Map<UUID, List<ProgramRoleSummaryResponse>> groupRoles(List<ProgramRoleEntity> assignments) {
+        Map<UUID, List<ProgramRoleSummaryResponse>> grouped = new HashMap<>();
+        assignments.forEach(assignment -> grouped
+                .computeIfAbsent(assignment.getProgram().getId(), ignored -> new ArrayList<>())
+                .add(new ProgramRoleSummaryResponse(
+                        assignment.getUser().getId(),
+                        assignment.getUser().getUsername(),
+                        assignment.getUser().getFullName(),
+                        assignment.getRole(),
+                        assignment.getAssignedAt(),
+                        assignment.getAssignedBy() == null ? null : assignment.getAssignedBy().getId())));
+        return immutableLists(grouped);
+    }
+
+    private static Map<UUID, ProgramScreeningSummaryResponse> screeningSummaries(
+            List<ProgramScreeningCountProjection> rows) {
+        Map<UUID, ProgramScreeningSummaryResponse> summaries = new HashMap<>();
+        rows.forEach(row -> summaries.put(row.getProgramId(), new ProgramScreeningSummaryResponse(
+                row.getActiveCount(), row.getScheduledCount(), collectionUrl(row.getProgramId()))));
+        return Map.copyOf(summaries);
+    }
+
+    private static ProgramScreeningSummaryResponse emptyScreeningSummary(UUID programId) {
+        return new ProgramScreeningSummaryResponse(0, 0, collectionUrl(programId));
+    }
+
+    private static String collectionUrl(UUID programId) {
+        return "/api/v1/programs/" + programId + "/screenings";
+    }
+
+    private static <T> Map<UUID, List<T>> immutableLists(Map<UUID, List<T>> mutable) {
+        Map<UUID, List<T>> result = new HashMap<>();
+        mutable.forEach((key, value) -> result.put(key, List.copyOf(value)));
+        return Collections.unmodifiableMap(result);
+    }
+
+    private ValidatedSearch validate(ProgramSearchParameters parameters) {
+        if (parameters == null) {
+            throw new InvalidInputException("INVALID_SEARCH", "Search parameters are required.");
+        }
+        if (parameters.page() < 0) {
+            throw new InvalidInputException("INVALID_PAGE", "page must be greater than or equal to zero.");
+        }
+        int size = parameters.size() == null ? pagination.defaultSize() : parameters.size();
+        if (size < 1 || size > pagination.maxSize()) {
+            throw new InvalidInputException(
+                    "INVALID_PAGE_SIZE",
+                    "size must be between 1 and " + pagination.maxSize() + ".");
+        }
+        if (parameters.fromDate() != null && parameters.toDate() != null
+                && parameters.fromDate().isAfter(parameters.toDate())) {
+            throw new InvalidInputException(
+                    "INVALID_DATE_RANGE", "fromDate must be before or equal to toDate.");
+        }
+        ProgramSortDirection direction = parseDirection(parameters.direction());
+        ProgramSearchCriteria criteria = new ProgramSearchCriteria(
+                normalizeFilter(parameters.name()),
+                normalizeFilter(parameters.description()),
+                parameters.fromDate(),
+                parameters.toDate(),
+                normalizeFilter(parameters.filmTitle()),
+                normalizeFilter(parameters.auditorium()),
+                direction);
+        return new ValidatedSearch(criteria, parameters.page(), size);
+    }
+
+    private static ProgramSortDirection parseDirection(String value) {
+        if (value == null) {
+            return ProgramSortDirection.ASC;
+        }
+        try {
+            return ProgramSortDirection.valueOf(value);
+        } catch (IllegalArgumentException exception) {
+            throw new InvalidInputException(
+                    "INVALID_SORT_DIRECTION", "direction must be ASC or DESC.");
+        }
+    }
+
+    private static String normalizeFilter(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.strip().toLowerCase(Locale.ROOT);
+    }
+
+    private record ValidatedSearch(ProgramSearchCriteria criteria, int page, int size) {
+    }
+}

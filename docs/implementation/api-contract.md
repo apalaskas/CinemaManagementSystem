@@ -52,11 +52,11 @@ List endpoints accept `page` (zero-based, default `0`) and `size` (default `20`,
 
 ```json
 {
-  "items": [],
   "page": 0,
   "size": 20,
   "totalElements": 0,
-  "totalPages": 0
+  "totalPages": 0,
+  "content": []
 }
 ```
 
@@ -94,7 +94,7 @@ Clients may send `X-Correlation-ID` using 1-100 letters, digits, `.`, `_`, or `-
 - `description`: nonblank after trimming.
 - `startDate`, `endDate`: required on creation; `endDate >= startDate`.
 
-`ProgramSummaryResponse` contains `programId`, `name`, `description`, `startDate`, `endDate`, `state`, and the role-allowed public auditorium/programmer information. `ProgramDetailResponse` additionally contains `createdAt`, `version`, creator and role details when visible, and managed Screening links/summaries when requested by the service projection.
+Program reads use two explicit allowlisted DTOs. `PublicProgramResponse` contains only `programId`, `name`, `description`, `startDate`, `endDate`, `programmerDisplayNames`, and distinct `finalAuditoriumNames` derived from active `SCHEDULED` Screenings. `FullProgramResponse` adds `state`, `createdAt`, `version`, creator information, role summaries, and a Screening summary with active/scheduled counts and the Program Screening collection URL. Command responses continue to use `ProgramDetailResponse`.
 
 The Program command projection currently returned by create and update is:
 
@@ -223,13 +223,15 @@ Skip, reverse, terminal-state, invalid-prerequisite, or concurrency conflict is 
 
 UC-P4 / FR-9, FR-11. Anonymous allowed.
 
-Optional trimmed filters: `name`, `description`, `startDateFrom`, `startDateTo`, `endDateFrom`, `endDateTo`, `filmTitle`, `auditorium`. All supplied filters combine with AND and are case-insensitive where textual. `auditorium` is derived from final auditorium data of active `SCHEDULED` Screenings.
+Optional parameters are `name`, `description`, `fromDate`, `toDate`, `filmTitle`, `auditorium`, `direction`, `page`, and `size`. Blank text filters are absent. `fromDate <= toDate` when both are supplied. Date filtering uses interval overlap: `program.startDate <= toDate` and `program.endDate >= fromDate`. Text searches are case-insensitive contains searches with literal `%`, `_`, and escape characters escaped before use in `LIKE`.
 
-Accept `sortDirection=asc|desc` (default `asc`), then order by Program start date, name, UUID. Apply access predicates and redaction in SQL/projection and return a page of `ProgramSummaryResponse`.
+All filter categories combine with AND. `filmTitle` uses active Screening existence subqueries: anonymous/ordinary callers can match only public active `SCHEDULED` Screenings, while a managing PROGRAMMER can also match private active Screenings in that same managed Program. `auditorium` always matches only final auditorium data from active `SCHEDULED` Screenings; candidate auditorium data is not searchable here. Existence subqueries prevent duplicate Programs.
+
+Accept `direction=ASC|DESC` (default `ASC`). Order Program start date, case-insensitive Program name, then Program UUID in that direction. `page` defaults to `0`; `size` defaults to the configured pagination default (`20`) and cannot exceed the configured maximum (`100`). Visibility, filters, ordering, count, and pagination execute in MySQL. Bounded batch projections avoid N+1 loading and `SearchAndVisibilityService` selects `PublicProgramResponse` or `FullProgramResponse` independently for each result. Return `PageResponse<ProgramViewResponse>` using `content` rather than Spring Data Page serialization. Program collection search uses the Program-search rate-limit group and returns safe `429` with `Retry-After` when exhausted.
 
 ### GET `/api/v1/programs/{programId}`
 
-UC-P4 / FR-11. Anonymous allowed. Return `200 ProgramDetailResponse` with the caller's projection. A non-ANNOUNCED Program not managed by the caller is intentionally concealed as `404`.
+UC-P4 / FR-11. Anonymous allowed. Return `200` with `PublicProgramResponse` for an `ANNOUNCED` Program unless the caller is a PROGRAMMER of that exact Program, in which case return `FullProgramResponse` in any state. A non-ANNOUNCED Program not managed by the caller and a missing Program share the same safe `404 RESOURCE_NOT_FOUND` response.
 
 ## Screening endpoints
 

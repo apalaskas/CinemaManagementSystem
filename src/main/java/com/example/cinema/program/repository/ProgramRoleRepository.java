@@ -28,4 +28,36 @@ public interface ProgramRoleRepository extends JpaRepository<ProgramRoleEntity, 
             @Param("role") ProgramRoleType role);
 
     long countByIdProgramId(UUID programId);
+
+    @Query("""
+            select r.id.programId
+            from ProgramRoleEntity r
+            where r.id.programId in :programIds
+              and r.id.userId = :userId
+              and r.role = :role
+            """)
+    List<UUID> findProgramIdsForUserRole(
+            @Param("programIds") List<UUID> programIds,
+            @Param("userId") UUID userId,
+            @Param("role") ProgramRoleType role);
+
+    @Query("""
+            select r.id.programId as programId, r.user.fullName as fullName
+            from ProgramRoleEntity r
+            where r.id.programId in :programIds
+              and r.role = com.example.cinema.program.domain.ProgramRoleType.PROGRAMMER
+            order by r.id.programId, lower(r.user.fullName), r.id.userId
+            """)
+    List<ProgrammerNameProjection> findProgrammerNames(
+            @Param("programIds") List<UUID> programIds);
+
+    @Query("""
+            select r from ProgramRoleEntity r
+            join fetch r.user
+            left join fetch r.assignedBy
+            where r.id.programId in :programIds
+            order by r.id.programId, r.assignedAt, r.id.userId
+            """)
+    List<ProgramRoleEntity> findAllWithUsersByProgramIds(
+            @Param("programIds") List<UUID> programIds);
 }

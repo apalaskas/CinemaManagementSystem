@@ -1,6 +1,7 @@
 package com.example.cinema.common.api;
 
 import static org.hamcrest.Matchers.hasSize;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -13,8 +14,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Map;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -61,8 +64,11 @@ import com.example.cinema.user.authentication.SharedDatabaseAuthenticationAdapte
 import com.example.cinema.user.domain.UserEntity;
 import com.example.cinema.user.repository.UserRepository;
 import com.example.cinema.program.api.ProgramController;
+import com.example.cinema.program.api.PublicProgramResponse;
 import com.example.cinema.program.service.ProgramLifecycleService;
 import com.example.cinema.program.service.ProgramManagementService;
+import com.example.cinema.search.visibility.SearchAndVisibilityService;
+import com.example.cinema.common.api.PageResponse;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -98,19 +104,31 @@ class InfrastructureWebSecurityTest {
     @MockitoBean UserRepository userRepository;
     @MockitoBean ProgramManagementService programManagementService;
     @MockitoBean ProgramLifecycleService programLifecycleService;
+    @MockitoBean SearchAndVisibilityService searchAndVisibilityService;
 
     @BeforeEach
     void user() {
         when(userRepository.findByUsername("alice")).thenReturn(Optional.of(new UserEntity(
                 UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
                 "alice", passwordEncoder.encode("correct"), "Alice Example")));
+        when(searchAndVisibilityService.searchPrograms(any())).thenReturn(
+                new PageResponse<>(0, 20, 0, 0, java.util.List.of()));
+        UUID publicProgramId = UUID.fromString("cccccccc-cccc-cccc-cccc-cccccccccccc");
+        when(searchAndVisibilityService.viewProgram(publicProgramId)).thenReturn(new PublicProgramResponse(
+                publicProgramId, "Public", "Description",
+                LocalDate.parse("2027-01-01"), LocalDate.parse("2027-02-01"),
+                List.of("Alice Example"), List.of("Main Hall")));
     }
 
     @Test
     void permitsAnonymousPublicGetAndProtectsMutation() throws Exception {
         mockMvc.perform(get("/api/v1/programs"))
                 .andExpect(status().isOk())
-                .andExpect(content().string("public"));
+                .andExpect(jsonPath("$.content").isEmpty());
+
+        mockMvc.perform(get("/api/v1/programs/cccccccc-cccc-cccc-cccc-cccccccccccc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Public"));
 
         mockMvc.perform(post("/api/v1/test/protected").header("X-Correlation-ID", "auth-401"))
                 .andExpect(status().isUnauthorized())
@@ -222,9 +240,6 @@ class InfrastructureWebSecurityTest {
     static class InfrastructureTestController {
         private final CurrentUser currentUser;
         InfrastructureTestController(CurrentUser currentUser) { this.currentUser = currentUser; }
-
-        @GetMapping("/api/v1/programs")
-        String publicPrograms() { return "public"; }
 
         @PostMapping("/api/v1/test/protected")
         Map<String, Object> protectedCommand() {

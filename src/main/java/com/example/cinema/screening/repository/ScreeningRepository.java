@@ -154,4 +154,29 @@ public interface ScreeningRepository extends JpaRepository<ScreeningEntity, UUID
             @Param("finalAuditoriumName") String finalAuditoriumName,
             @Param("requestedStart") Instant requestedStart,
             @Param("requestedEnd") Instant requestedEnd);
+
+    @Query("""
+            select distinct s.program.id as programId, s.finalAuditoriumName as auditoriumName
+            from ScreeningEntity s
+            where s.program.id in :programIds
+              and s.deletedAt is null
+              and s.state = com.example.cinema.screening.domain.ScreeningState.SCHEDULED
+              and s.finalAuditoriumName is not null
+            order by s.program.id, s.finalAuditoriumName
+            """)
+    List<ProgramAuditoriumProjection> findDistinctScheduledAuditoriums(
+            @Param("programIds") List<UUID> programIds);
+
+    @Query("""
+            select s.program.id as programId,
+                   count(s) as activeCount,
+                   sum(case when s.state = com.example.cinema.screening.domain.ScreeningState.SCHEDULED
+                            then 1 else 0 end) as scheduledCount
+            from ScreeningEntity s
+            where s.program.id in :programIds
+              and s.deletedAt is null
+            group by s.program.id
+            """)
+    List<ProgramScreeningCountProjection> countActiveAndScheduledByProgramIds(
+            @Param("programIds") List<UUID> programIds);
 }

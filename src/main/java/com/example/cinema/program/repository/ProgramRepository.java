@@ -13,7 +13,7 @@ import com.example.cinema.program.domain.ProgramEntity;
 
 import jakarta.persistence.LockModeType;
 
-public interface ProgramRepository extends JpaRepository<ProgramEntity, UUID> {
+public interface ProgramRepository extends JpaRepository<ProgramEntity, UUID>, ProgramSearchRepository {
 
     boolean existsByNameIgnoreCase(String name);
 
