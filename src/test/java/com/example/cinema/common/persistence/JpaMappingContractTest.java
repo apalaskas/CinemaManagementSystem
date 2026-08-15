@@ -19,6 +19,7 @@ import com.example.cinema.idempotency.IdempotencyRecordEntity;
 import com.example.cinema.program.domain.ProgramEntity;
 import com.example.cinema.program.domain.ProgramRoleEntity;
 import com.example.cinema.program.domain.ProgramRoleId;
+import com.example.cinema.program.repository.ProgramRepository;
 import com.example.cinema.screening.domain.ReviewEntity;
 import com.example.cinema.screening.domain.ScreeningEntity;
 import com.example.cinema.screening.repository.ScreeningRepository;
@@ -103,6 +104,23 @@ class JpaMappingContractTest {
                 .contains("s.endTime > :requestedStart")
                 .doesNotContain("lower(");
         assertThat(method.getAnnotation(Lock.class).value()).isEqualTo(LockModeType.PESSIMISTIC_WRITE);
+    }
+
+    @Test
+    void lifecycleQueriesLockTheProgramAndOnlyMissingFinalSubmissions() throws ReflectiveOperationException {
+        Method programLock = ProgramRepository.class.getMethod("findByIdForUpdate", UUID.class);
+        assertThat(programLock.getAnnotation(Lock.class).value())
+                .isEqualTo(LockModeType.PESSIMISTIC_WRITE);
+
+        Method screeningLock = ScreeningRepository.class.getMethod(
+                "findApprovedWithoutFinalSubmissionForUpdate", UUID.class);
+        assertThat(screeningLock.getAnnotation(Lock.class).value())
+                .isEqualTo(LockModeType.PESSIMISTIC_WRITE);
+        assertThat(screeningLock.getAnnotation(Query.class).value())
+                .contains("ScreeningState.APPROVED")
+                .contains("s.finalSubmittedAt is null")
+                .contains("s.deletedAt is null")
+                .contains("order by s.id");
     }
 
     private static String tableName(Class<?> entityType) {

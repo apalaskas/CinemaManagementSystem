@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.example.cinema.common.api.EntityTagParser;
 import com.example.cinema.program.service.ProgramCommandResult;
+import com.example.cinema.program.service.ProgramLifecycleService;
 import com.example.cinema.program.service.ProgramManagementService;
 
 import jakarta.validation.Valid;
@@ -29,10 +30,15 @@ import jakarta.validation.Valid;
 public class ProgramController {
 
     private final ProgramManagementService service;
+    private final ProgramLifecycleService lifecycleService;
     private final EntityTagParser entityTagParser;
 
-    public ProgramController(ProgramManagementService service, EntityTagParser entityTagParser) {
+    public ProgramController(
+            ProgramManagementService service,
+            ProgramLifecycleService lifecycleService,
+            EntityTagParser entityTagParser) {
         this.service = service;
+        this.lifecycleService = lifecycleService;
         this.entityTagParser = entityTagParser;
     }
 
@@ -96,5 +102,21 @@ public class ProgramController {
         return ResponseEntity.noContent()
                 .eTag(entityTagParser.format(newVersion))
                 .build();
+    }
+
+    @PostMapping(path = "/{programId}/transitions", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<ProgramTransitionResponse> transition(
+            @PathVariable UUID programId,
+            @RequestHeader(HttpHeaders.IF_MATCH) String ifMatch,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody ProgramTransitionRequest request) {
+        ProgramCommandResult<ProgramTransitionResponse> result = lifecycleService.transition(
+                programId,
+                entityTagParser.parseVersion(ifMatch),
+                request,
+                idempotencyKey);
+        return ResponseEntity.status(result.status())
+                .eTag(entityTagParser.format(result.body().version()))
+                .body(result.body());
     }
 }

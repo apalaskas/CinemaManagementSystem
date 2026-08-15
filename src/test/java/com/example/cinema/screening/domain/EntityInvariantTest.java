@@ -2,6 +2,7 @@ package com.example.cinema.screening.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -82,6 +83,20 @@ class EntityInvariantTest {
                 UUID.randomUUID(), screening, user, new BigDecimal("8.00"), "  ", Instant.EPOCH));
     }
 
+    @Test
+    void automaticRejectionOnlyAppliesToApprovedScreeningsWithoutFinalSubmission() {
+        ScreeningEntity missingFinal = screeningWithState(ScreeningState.APPROVED, null);
+        missingFinal.rejectForMissingFinalSubmission("FINAL_SUBMISSION_MISSING");
+        assertThat(missingFinal.getState()).isEqualTo(ScreeningState.REJECTED);
+        assertThat(missingFinal.getRejectionReason()).isEqualTo("FINAL_SUBMISSION_MISSING");
+
+        ScreeningEntity finallySubmitted = screeningWithState(
+                ScreeningState.APPROVED, Instant.parse("2027-02-01T10:00:00Z"));
+        assertThatIllegalStateException().isThrownBy(() ->
+                finallySubmitted.rejectForMissingFinalSubmission("FINAL_SUBMISSION_MISSING"));
+        assertThat(finallySubmitted.getState()).isEqualTo(ScreeningState.APPROVED);
+    }
+
     private ProgramEntity validProgram() {
         return new ProgramEntity(
                 UUID.randomUUID(),
@@ -91,5 +106,24 @@ class EntityInvariantTest {
                 LocalDate.of(2027, 1, 1),
                 LocalDate.of(2027, 12, 31),
                 Instant.parse("2027-01-01T00:00:00Z"));
+    }
+
+    private ScreeningEntity screeningWithState(ScreeningState state, Instant finalSubmittedAt) {
+        ScreeningEntity screening = new ScreeningEntity(
+                UUID.randomUUID(), validProgram(), user, "Film", "Cast", "Drama", 90,
+                "Auditorium", null, null, Instant.EPOCH);
+        set(screening, "state", state);
+        set(screening, "finalSubmittedAt", finalSubmittedAt);
+        return screening;
+    }
+
+    private static void set(ScreeningEntity screening, String fieldName, Object value) {
+        try {
+            java.lang.reflect.Field field = ScreeningEntity.class.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            field.set(screening, value);
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(exception);
+        }
     }
 }

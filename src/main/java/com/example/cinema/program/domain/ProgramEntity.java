@@ -119,6 +119,14 @@ public class ProgramEntity {
         return version;
     }
 
+    public void transitionTo(ProgramState targetState) {
+        ProgramState requiredTarget = requireNonNull(targetState, "targetState");
+        if (!state.canTransitionTo(requiredTarget)) {
+            throw new IllegalArgumentException("targetState must be the exact next Program state");
+        }
+        state = requiredTarget;
+    }
+
     public void updateDetails(
             String name,
             String description,

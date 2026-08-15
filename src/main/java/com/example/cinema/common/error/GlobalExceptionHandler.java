@@ -12,6 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
@@ -120,6 +121,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
     ResponseEntity<ProblemDetail> handleOptimisticLock(
             ObjectOptimisticLockingFailureException exception,
+            HttpServletRequest request) {
+        return response(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
+                "The resource changed while the request was being processed.", request);
+    }
+
+    @ExceptionHandler(PessimisticLockingFailureException.class)
+    ResponseEntity<ProblemDetail> handlePessimisticLock(
+            PessimisticLockingFailureException exception,
             HttpServletRequest request) {
         return response(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
                 "The resource changed while the request was being processed.", request);

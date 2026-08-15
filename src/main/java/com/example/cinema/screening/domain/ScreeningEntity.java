@@ -1,6 +1,7 @@
 package com.example.cinema.screening.domain;
 
 import static com.example.cinema.common.domain.DomainAssertions.normalizeOptionalText;
+import static com.example.cinema.common.domain.DomainAssertions.requireNonBlank;
 import static java.util.Objects.requireNonNull;
 
 import java.time.Duration;
@@ -216,5 +217,14 @@ public class ScreeningEntity {
 
     public long getVersion() {
         return version;
+    }
+
+    public void rejectForMissingFinalSubmission(String reason) {
+        if (state != ScreeningState.APPROVED || finalSubmittedAt != null) {
+            throw new IllegalStateException(
+                    "Only an APPROVED Screening without final submission may be automatically rejected");
+        }
+        state = ScreeningState.REJECTED;
+        rejectionReason = requireNonBlank(reason, "reason");
     }
 }

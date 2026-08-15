@@ -41,6 +41,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.cinema.common.api.InfrastructureWebSecurityTest.InfrastructureTestController;
+import com.example.cinema.common.api.EntityTagParser;
 import com.example.cinema.common.config.CinemaProperties;
 import com.example.cinema.common.error.ApiProblemFactory;
 import com.example.cinema.common.error.ForbiddenException;
@@ -59,12 +60,15 @@ import com.example.cinema.user.authentication.SecurityContextCurrentUser;
 import com.example.cinema.user.authentication.SharedDatabaseAuthenticationAdapter;
 import com.example.cinema.user.domain.UserEntity;
 import com.example.cinema.user.repository.UserRepository;
+import com.example.cinema.program.api.ProgramController;
+import com.example.cinema.program.service.ProgramLifecycleService;
+import com.example.cinema.program.service.ProgramManagementService;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 
-@WebMvcTest(controllers = InfrastructureTestController.class)
+@WebMvcTest(controllers = {InfrastructureTestController.class, ProgramController.class})
 @ImportAutoConfiguration({
         SecurityAutoConfiguration.class,
         ServletWebSecurityAutoConfiguration.class,
@@ -83,6 +87,7 @@ import jakarta.validation.constraints.NotBlank;
         ApiProblemFactory.class,
         ProblemResponseWriter.class,
         GlobalExceptionHandler.class,
+        EntityTagParser.class,
         InProcessRateLimiter.class,
         RateLimitFilter.class
 })
@@ -91,6 +96,8 @@ class InfrastructureWebSecurityTest {
     @Autowired MockMvc mockMvc;
     @Autowired PasswordEncoder passwordEncoder;
     @MockitoBean UserRepository userRepository;
+    @MockitoBean ProgramManagementService programManagementService;
+    @MockitoBean ProgramLifecycleService programLifecycleService;
 
     @BeforeEach
     void user() {
@@ -120,6 +127,15 @@ class InfrastructureWebSecurityTest {
                         org.hamcrest.Matchers.containsString("Authorization"))))
                 .andExpect(content().string(org.hamcrest.Matchers.not(
                         org.hamcrest.Matchers.containsString("password"))));
+
+        mockMvc.perform(post("/api/v1/programs/{programId}/transitions",
+                        "cccccccc-cccc-cccc-cccc-cccccccccccc")
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", "transition-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"targetState\":\"SUBMISSION\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
     }
 
     @Test

@@ -13,6 +13,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import com.example.cinema.screening.domain.ScreeningEntity;
+import com.example.cinema.screening.domain.ScreeningState;
 
 import jakarta.persistence.LockModeType;
 
@@ -51,6 +52,68 @@ public interface ScreeningRepository extends JpaRepository<ScreeningEntity, UUID
             @Param("programId") UUID programId,
             @Param("handlerUserId") UUID handlerUserId,
             Pageable pageable);
+
+    @Query("""
+            select count(s)
+            from ScreeningEntity s
+            where s.program.id = :programId
+              and s.deletedAt is null
+              and s.state = :state
+            """)
+    long countActiveByProgramIdAndState(
+            @Param("programId") UUID programId,
+            @Param("state") ScreeningState state);
+
+    @Query("""
+            select count(s)
+            from ScreeningEntity s
+            where s.program.id = :programId
+              and s.deletedAt is null
+              and s.state = com.example.cinema.screening.domain.ScreeningState.SUBMITTED
+              and (
+                  s.handler is null
+                  or not exists (
+                      select r.id.programId
+                      from ProgramRoleEntity r
+                      where r.id.programId = :programId
+                        and r.id.userId = s.handler.id
+                        and r.role = com.example.cinema.program.domain.ProgramRoleType.STAFF
+                  )
+              )
+            """)
+    long countActiveSubmittedWithoutFrozenStaffHandler(@Param("programId") UUID programId);
+
+    @Query("""
+            select count(s)
+            from ScreeningEntity s
+            where s.program.id = :programId
+              and s.deletedAt is null
+              and (
+                  s.state = com.example.cinema.screening.domain.ScreeningState.SUBMITTED
+                  or (
+                      s.state = com.example.cinema.screening.domain.ScreeningState.REVIEWED
+                      and not exists (
+                          select review.id
+                          from ReviewEntity review
+                          where review.screening.id = s.id
+                      )
+                  )
+              )
+            """)
+    long countActiveIncompleteReviews(@Param("programId") UUID programId);
+
+    @Query("""
+            select count(s)
+            from ScreeningEntity s
+            where s.program.id = :programId
+              and s.deletedAt is null
+              and s.state in (
+                  com.example.cinema.screening.domain.ScreeningState.SUBMITTED,
+                  com.example.cinema.screening.domain.ScreeningState.REVIEWED,
+                  com.example.cinema.screening.domain.ScreeningState.APPROVED
+              )
+            """)
+    long countActiveNonFinalDecisionWorkflow(@Param("programId") UUID programId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""

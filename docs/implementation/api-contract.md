@@ -194,14 +194,30 @@ UC-P3 / FR-4. Managing `PROGRAMMER`; `Idempotency-Key` and Program `If-Match` re
 
 Only the exact next state is accepted. Validate transition prerequisites under a Program lock and apply side effects atomically:
 
-- Enter `SUBMISSION`: freeze STAFF.
-- Enter `REVIEW`: every active submitted Screening has exactly one frozen-STAFF handler.
-- Enter `SCHEDULING`: all active submitted Screenings are reviewed.
-- Enter `FINAL_PUBLICATION`: every reviewed Screening is `APPROVED` or `REJECTED`.
+- Enter `SUBMISSION`: require at least one STAFF assignment, then freeze STAFF through the Program state; no copied snapshot is used.
+- Enter `ASSIGNMENT`: close the submission/withdrawal window governed by Program state.
+- Enter `REVIEW`: every active `SUBMITTED` Screening has exactly one handler who still belongs to the frozen STAFF set.
+- Enter `SCHEDULING`: no active `SUBMITTED` Screening remains, and every active `REVIEWED` Screening has its Review row.
+- Enter `FINAL_PUBLICATION`: no active `REVIEWED` Screening remains; every Screening that was reviewed is `APPROVED` or `REJECTED`.
 - Enter `DECISION`: automatically reject every active `APPROVED` Screening without `finalSubmittedAt`, with a system reason.
-- Enter `ANNOUNCED`: lock Program content/schedule for public publication.
+- Enter `ANNOUNCED`: require every active Screening that reached the decision workflow to be `SCHEDULED` or `REJECTED`, then lock Program content/schedule for public publication.
 
-Return `200` with updated Program details/ETag. Skip, rollback, invalid prerequisite, or concurrency conflict is `409`.
+The Program row is selected `FOR UPDATE`; automatic-rejection candidates are also selected `FOR UPDATE`. Program state/version update, Screening side effects, one Program transition audit, one system audit per automatic rejection, and the stored idempotency result share one transaction. Failure rolls everything back.
+
+Return `200`, an ETag matching the new Program version, and:
+
+```json
+{
+  "programId": "canonical-uuid",
+  "oldState": "FINAL_PUBLICATION",
+  "newState": "DECISION",
+  "version": 6,
+  "transitionedAt": "2026-08-15T10:15:30Z",
+  "automaticallyRejectedScreenings": 2
+}
+```
+
+Skip, reverse, terminal-state, invalid-prerequisite, or concurrency conflict is a safe `409`.
 
 ### GET `/api/v1/programs`
 

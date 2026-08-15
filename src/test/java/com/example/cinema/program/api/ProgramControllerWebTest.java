@@ -33,6 +33,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -48,7 +49,9 @@ import com.example.cinema.common.error.OptimisticConcurrencyConflictException;
 import com.example.cinema.common.error.ProgramNameExistsException;
 import com.example.cinema.common.error.ProgramRoleExistsException;
 import com.example.cinema.common.error.ProgramRoleNotFoundException;
+import com.example.cinema.common.error.ProgramTransitionPrerequisiteException;
 import com.example.cinema.common.error.ProblemResponseWriter;
+import com.example.cinema.common.error.ResourceNotFoundException;
 import com.example.cinema.common.error.RoleConflictException;
 import com.example.cinema.common.infrastructure.CorrelationIdFilter;
 import com.example.cinema.common.ratelimit.InProcessRateLimiter;
@@ -56,6 +59,7 @@ import com.example.cinema.common.ratelimit.RateLimitDecision;
 import com.example.cinema.program.domain.ProgramRoleType;
 import com.example.cinema.program.domain.ProgramState;
 import com.example.cinema.program.service.ProgramCommandResult;
+import com.example.cinema.program.service.ProgramLifecycleService;
 import com.example.cinema.program.service.ProgramManagementService;
 import com.example.cinema.user.authentication.CurrentUser;
 
@@ -76,6 +80,7 @@ class ProgramControllerWebTest {
 
     @Autowired MockMvc mockMvc;
     @MockitoBean ProgramManagementService service;
+    @MockitoBean ProgramLifecycleService lifecycleService;
     @MockitoBean InProcessRateLimiter rateLimiter;
     @MockitoBean CurrentUser currentUser;
     @MockitoBean ProblemResponseWriter problemResponseWriter;
@@ -318,6 +323,132 @@ class ProgramControllerWebTest {
         assertRoleRemovalError(409, "CREATOR_PROGRAMMER_REQUIRED");
     }
 
+    @Test
+    void advancesProgramLifecycleWithDedicatedSafeResponseAndEtag() throws Exception {
+        ProgramTransitionResponse response = new ProgramTransitionResponse(
+                PROGRAM_ID,
+                ProgramState.FINAL_PUBLICATION,
+                ProgramState.DECISION,
+                8,
+                NOW,
+                2);
+        when(lifecycleService.transition(
+                eq(PROGRAM_ID), eq(7L), any(), eq("transition-key")))
+                .thenReturn(new ProgramCommandResult<>(200, response, false));
+
+        mockMvc.perform(post("/api/v1/programs/{id}/transitions", PROGRAM_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"7\"")
+                        .header("Idempotency-Key", "transition-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"targetState\":\"DECISION\"}"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.ETAG, "\"8\""))
+                .andExpect(jsonPath("$.programId").value(PROGRAM_ID.toString()))
+                .andExpect(jsonPath("$.oldState").value("FINAL_PUBLICATION"))
+                .andExpect(jsonPath("$.newState").value("DECISION"))
+                .andExpect(jsonPath("$.version").value(8))
+                .andExpect(jsonPath("$.transitionedAt").value(NOW.toString()))
+                .andExpect(jsonPath("$.automaticallyRejectedScreenings").value(2))
+                .andExpect(jsonPath("$.screenings").doesNotExist());
+        verify(lifecycleService).transition(
+                eq(PROGRAM_ID), eq(7L), eq(new ProgramTransitionRequest(ProgramState.DECISION)),
+                eq("transition-key"));
+    }
+
+    @Test
+    void transitionRequiresAuthenticationAndAllCommandHeaders() throws Exception {
+        mockMvc.perform(post("/api/v1/programs/{id}/transitions", PROGRAM_ID)
+                        .with(user("alice"))
+                        .header("Idempotency-Key", "key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"targetState\":\"SUBMISSION\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("MISSING_REQUIRED_HEADER"));
+
+        mockMvc.perform(post("/api/v1/programs/{id}/transitions", PROGRAM_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"0\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"targetState\":\"SUBMISSION\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("MISSING_REQUIRED_HEADER"));
+    }
+
+    @Test
+    void rejectsMissingOrArbitraryTransitionTargetBeforeTheService() throws Exception {
+        mockMvc.perform(post("/api/v1/programs/{id}/transitions", PROGRAM_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"0\"")
+                        .header("Idempotency-Key", "key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+
+        mockMvc.perform(post("/api/v1/programs/{id}/transitions", PROGRAM_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"0\"")
+                        .header("Idempotency-Key", "key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"targetState\":\"PUBLISHED\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("MALFORMED_REQUEST"));
+    }
+
+    @Test
+    void mapsTransitionAuthorizationVisibilityStatePrerequisiteAndConcurrencySafely() throws Exception {
+        when(lifecycleService.transition(eq(PROGRAM_ID), eq(2L), any(), eq("forbidden")))
+                .thenThrow(new ForbiddenException());
+        assertTransitionError("forbidden", 403, "FORBIDDEN");
+
+        when(lifecycleService.transition(eq(PROGRAM_ID), eq(2L), any(), eq("missing")))
+                .thenThrow(new ResourceNotFoundException());
+        assertTransitionError("missing", 404, "RESOURCE_NOT_FOUND");
+
+        when(lifecycleService.transition(eq(PROGRAM_ID), eq(2L), any(), eq("invalid")))
+                .thenThrow(new InvalidStateException());
+        assertTransitionError("invalid", 409, "INVALID_STATE");
+
+        when(lifecycleService.transition(eq(PROGRAM_ID), eq(2L), any(), eq("prerequisite")))
+                .thenThrow(new ProgramTransitionPrerequisiteException("A phase prerequisite is incomplete."));
+        assertTransitionError("prerequisite", 409, "PROGRAM_TRANSITION_PREREQUISITE_FAILED");
+
+        when(lifecycleService.transition(eq(PROGRAM_ID), eq(2L), any(), eq("optimistic")))
+                .thenThrow(new OptimisticConcurrencyConflictException());
+        assertTransitionError("optimistic", 409, "CONCURRENT_MODIFICATION");
+
+        when(lifecycleService.transition(eq(PROGRAM_ID), eq(2L), any(), eq("pessimistic")))
+                .thenThrow(new PessimisticLockingFailureException("database details"));
+        assertTransitionError("pessimistic", 409, "CONCURRENT_MODIFICATION");
+    }
+
+    @Test
+    void returnsExactStoredTransitionOnIdempotentReplayAndMapsPayloadMismatch() throws Exception {
+        ProgramTransitionResponse response = new ProgramTransitionResponse(
+                PROGRAM_ID, ProgramState.CREATED, ProgramState.SUBMISSION, 1, NOW, 0);
+        when(lifecycleService.transition(eq(PROGRAM_ID), eq(0L), any(), eq("replay")))
+                .thenReturn(new ProgramCommandResult<>(200, response, true));
+
+        mockMvc.perform(post("/api/v1/programs/{id}/transitions", PROGRAM_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"0\"")
+                        .header("Idempotency-Key", "replay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"targetState\":\"SUBMISSION\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.newState").value("SUBMISSION"))
+                .andExpect(jsonPath("$.version").value(1));
+
+        when(lifecycleService.transition(eq(PROGRAM_ID), eq(0L), any(), eq("mismatch")))
+                .thenThrow(new IdempotencyConflictException(
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "The Idempotency-Key was already used with different request content.",
+                        false));
+        assertTransitionErrorWithVersion(
+                "mismatch", 0, ProgramState.SUBMISSION, 409, "IDEMPOTENCY_KEY_REUSED");
+    }
+
     private void assertUpdateError(String key, int expectedStatus, String errorCode) throws Exception {
         mockMvc.perform(patch("/api/v1/programs/{id}", PROGRAM_ID)
                         .with(user("alice"))
@@ -327,6 +458,28 @@ class ProgramControllerWebTest {
                         .content("{\"description\":\"Updated\"}"))
                 .andExpect(status().is(expectedStatus))
                 .andExpect(jsonPath("$.errorCode").value(errorCode));
+    }
+
+    private void assertTransitionError(String key, int expectedStatus, String errorCode) throws Exception {
+        assertTransitionErrorWithVersion(key, 2, ProgramState.REVIEW, expectedStatus, errorCode);
+    }
+
+    private void assertTransitionErrorWithVersion(
+            String key,
+            long version,
+            ProgramState targetState,
+            int expectedStatus,
+            String errorCode) throws Exception {
+        mockMvc.perform(post("/api/v1/programs/{id}/transitions", PROGRAM_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"" + version + "\"")
+                        .header("Idempotency-Key", key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"targetState\":\"" + targetState + "\"}"))
+                .andExpect(status().is(expectedStatus))
+                .andExpect(jsonPath("$.errorCode").value(errorCode))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("database details"))));
     }
 
     private void assertRoleAddError(String key, String errorCode) throws Exception {
