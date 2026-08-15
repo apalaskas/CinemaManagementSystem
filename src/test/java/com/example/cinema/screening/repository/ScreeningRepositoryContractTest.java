@@ -26,6 +26,7 @@ class ScreeningRepositoryContractTest {
     void everyActiveWorkflowAndProjectionQueryExcludesSoftDeletedScreenings() {
         Set<String> activeQueryNames = Set.of(
                 "findActiveById",
+                "findActiveProgramIdById",
                 "findActiveByIdForUpdate",
                 "findActiveByProgramId",
                 "findActiveOwnedBy",

@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -30,6 +31,8 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -150,6 +153,9 @@ class ScreeningPreparationServiceTest {
         verify(auditLoggingService).recordUserAction(
                 eq(USER_ID), eq("SCREENING_CREATED"), eq("SCREENING"), any(UUID.class),
                 eq(Map.of()), any(), eq(null));
+        InOrder lockThenRoleCheck = inOrder(programRepository, roleRepository);
+        lockThenRoleCheck.verify(programRepository).findByIdForUpdate(PROGRAM_ID);
+        lockThenRoleCheck.verify(roleRepository).findRole(PROGRAM_ID, USER_ID);
     }
 
     @Test
@@ -175,6 +181,23 @@ class ScreeningPreparationServiceTest {
 
         verify(roleRepository, never()).saveAndFlush(any());
         verify(screeningRepository).saveAndFlush(any(ScreeningEntity.class));
+    }
+
+    @Test
+    void concurrentConflictingRoleAssignmentIsTranslatedWithoutCreatingOrAuditingAScreening() {
+        ProgramEntity program = program(ProgramState.CREATED);
+        when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(program));
+        when(roleRepository.findRole(PROGRAM_ID, USER_ID)).thenReturn(Optional.empty());
+        when(roleRepository.saveAndFlush(any(ProgramRoleEntity.class)))
+                .thenThrow(new DataIntegrityViolationException("simulated role race"));
+
+        assertThatThrownBy(() -> service.create(PROGRAM_ID, completeRequest("Hall"), "role-race"))
+                .isInstanceOf(RoleConflictException.class)
+                .extracting(error -> ((RoleConflictException) error).errorCode())
+                .isEqualTo("ROLE_CONFLICT");
+
+        verify(screeningRepository, never()).saveAndFlush(any());
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
     }
 
     @ParameterizedTest
@@ -237,7 +260,7 @@ class ScreeningPreparationServiceTest {
     @Test
     void ownerUpdatesOnlyEditableDraftFieldsAndAuditsOldAndNewValues() {
         ScreeningEntity screening = screening(ProgramState.SUBMISSION, ScreeningState.CREATED, 2);
-        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(screening));
+        stubActive(screening);
         ScreeningUpdateRequest patch = new ScreeningUpdateRequest();
         patch.setFilmTitle("  Revised Film  ");
         patch.setDurationMinutes(100);
@@ -264,7 +287,7 @@ class ScreeningPreparationServiceTest {
     @Test
     void rejectsEmptyNullAndResultingInvalidDraftUpdates() {
         ScreeningEntity screening = screening(ProgramState.CREATED, ScreeningState.CREATED, 0);
-        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(screening));
+        stubActive(screening);
 
         assertUpdateCode(new ScreeningUpdateRequest(), "EMPTY_SCREENING_UPDATE");
         ScreeningUpdateRequest nullTitle = new ScreeningUpdateRequest();
@@ -284,22 +307,20 @@ class ScreeningPreparationServiceTest {
     @Test
     void updateRequiresOwnerAndSubmitterRelationship() {
         ScreeningEntity screening = screening(ProgramState.CREATED, ScreeningState.CREATED, 0);
-        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(screening));
+        stubActive(screening);
         doThrow(new ForbiddenException()).when(authorization).requireOwner(screening);
         ScreeningUpdateRequest patch = new ScreeningUpdateRequest();
         patch.setGenre("Drama");
 
         assertThatThrownBy(() -> service.update(SCREENING_ID, 0, patch, "forbidden"))
                 .isInstanceOf(ForbiddenException.class);
-        verify(idempotencyManager, never()).execute(any(), any(), any(), any());
         verify(screeningRepository, never()).saveAndFlush(any());
     }
 
     @Test
     void entityOwnerWithoutSubmitterProgramRoleCannotUpdateOrWithdraw() {
         ScreeningEntity screening = screening(ProgramState.CREATED, ScreeningState.CREATED, 0);
-        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(screening));
-        when(screeningRepository.findActiveByIdForUpdate(SCREENING_ID)).thenReturn(Optional.of(screening));
+        stubActive(screening);
         doThrow(new ForbiddenException()).when(authorization).requireSubmitter(PROGRAM_ID);
         ScreeningUpdateRequest patch = new ScreeningUpdateRequest();
         patch.setGenre("Drama");
@@ -318,12 +339,12 @@ class ScreeningPreparationServiceTest {
         patch.setGenre("Drama");
 
         ScreeningEntity submitted = screening(ProgramState.SUBMISSION, ScreeningState.SUBMITTED, 0);
-        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(submitted));
+        stubActive(submitted);
         assertThatThrownBy(() -> service.update(SCREENING_ID, 0, patch, "submitted"))
                 .isInstanceOf(InvalidStateException.class);
 
         ScreeningEntity late = screening(ProgramState.ASSIGNMENT, ScreeningState.CREATED, 0);
-        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(late));
+        stubActive(late);
         assertThatThrownBy(() -> service.update(SCREENING_ID, 0, patch, "late"))
                 .isInstanceOf(InvalidStateException.class);
     }
@@ -333,7 +354,7 @@ class ScreeningPreparationServiceTest {
         ScreeningUpdateRequest patch = new ScreeningUpdateRequest();
         patch.setGenre("Drama");
         ScreeningEntity screening = screening(ProgramState.CREATED, ScreeningState.CREATED, 4);
-        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(screening));
+        stubActive(screening);
 
         assertThatThrownBy(() -> service.update(SCREENING_ID, 3, patch, "stale"))
                 .isInstanceOf(OptimisticConcurrencyConflictException.class);
@@ -349,7 +370,7 @@ class ScreeningPreparationServiceTest {
     @Test
     void exactUpdateReplayReturnsStoredResponseAndPayloadMismatchDoesNotMutate() {
         ScreeningEntity screening = screening(ProgramState.CREATED, ScreeningState.CREATED, 2);
-        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(screening));
+        stubActive(screening);
         ScreeningDetailResponse stored = responseFor(screening);
         encodedResponse.set(stored);
         when(idempotencyManager.execute(eq("SCREENING.UPDATE"), eq("replay"), any(), any()))
@@ -361,6 +382,8 @@ class ScreeningPreparationServiceTest {
                 service.update(SCREENING_ID, 2, patch, "replay");
         assertThat(replay.replayed()).isTrue();
         assertThat(replay.body()).isEqualTo(stored);
+        verify(screeningRepository, never()).findActiveProgramIdById(any());
+        verify(programRepository, never()).findByIdForUpdate(any());
         verify(screeningRepository, never()).saveAndFlush(any());
 
         when(idempotencyManager.execute(eq("SCREENING.UPDATE"), eq("mismatch"), any(), any()))
@@ -398,7 +421,7 @@ class ScreeningPreparationServiceTest {
     @Test
     void createdAndSubmittedScreeningsWithdrawOnlyInsideTheirAllowedWindows() {
         ScreeningEntity created = screening(ProgramState.CREATED, ScreeningState.CREATED, 1);
-        when(screeningRepository.findActiveByIdForUpdate(SCREENING_ID)).thenReturn(Optional.of(created));
+        stubActive(created);
         service.withdraw(SCREENING_ID, 1);
         assertThat(created.getDeletedAt()).isEqualTo(NOW);
         verify(authorization).requireOwner(created);
@@ -408,7 +431,7 @@ class ScreeningPreparationServiceTest {
                 any(), any(), eq(null));
 
         ScreeningEntity submitted = screening(ProgramState.SUBMISSION, ScreeningState.SUBMITTED, 3);
-        when(screeningRepository.findActiveByIdForUpdate(SCREENING_ID)).thenReturn(Optional.of(submitted));
+        stubActive(submitted);
         service.withdraw(SCREENING_ID, 3);
         assertThat(submitted.getDeletedAt()).isEqualTo(NOW);
     }
@@ -417,7 +440,7 @@ class ScreeningPreparationServiceTest {
     @MethodSource("forbiddenWithdrawals")
     void rejectsEveryForbiddenWithdrawalState(ProgramState programState, ScreeningState screeningState) {
         ScreeningEntity screening = screening(programState, screeningState, 0);
-        when(screeningRepository.findActiveByIdForUpdate(SCREENING_ID)).thenReturn(Optional.of(screening));
+        stubActive(screening);
 
         assertThatThrownBy(() -> service.withdraw(SCREENING_ID, 0))
                 .isInstanceOf(InvalidStateException.class);
@@ -427,11 +450,66 @@ class ScreeningPreparationServiceTest {
 
     @Test
     void repeatedWithdrawalIsConcealedAndDoesNotCreateAnotherAudit() {
-        when(screeningRepository.findActiveByIdForUpdate(SCREENING_ID)).thenReturn(Optional.empty());
+        when(screeningRepository.findActiveProgramIdById(SCREENING_ID)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.withdraw(SCREENING_ID, 0))
                 .isInstanceOf(ResourceNotFoundException.class)
                 .hasMessageNotContaining(SCREENING_ID.toString());
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateLocksAndRechecksTheCurrentProgramPhaseBeforeLoadingTheDraft() {
+        ScreeningEntity screening = screening(ProgramState.SUBMISSION, ScreeningState.CREATED, 0);
+        ProgramEntity lockedProgram = program(ProgramState.ASSIGNMENT);
+        when(screeningRepository.findActiveProgramIdById(SCREENING_ID)).thenReturn(Optional.of(PROGRAM_ID));
+        when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(lockedProgram));
+        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(screening));
+        ScreeningUpdateRequest patch = new ScreeningUpdateRequest();
+        patch.setGenre("Drama");
+
+        assertThatThrownBy(() -> service.update(SCREENING_ID, 0, patch, "phase-race"))
+                .isInstanceOf(InvalidStateException.class);
+
+        InOrder locks = inOrder(screeningRepository, programRepository);
+        locks.verify(screeningRepository).findActiveProgramIdById(SCREENING_ID);
+        locks.verify(programRepository).findByIdForUpdate(PROGRAM_ID);
+        locks.verify(screeningRepository).findActiveById(SCREENING_ID);
+        verify(screeningRepository, never()).saveAndFlush(any());
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void withdrawalLocksProgramBeforeScreeningAndRechecksTheCurrentPhase() {
+        ScreeningEntity screening = screening(ProgramState.SUBMISSION, ScreeningState.CREATED, 0);
+        ProgramEntity lockedProgram = program(ProgramState.ASSIGNMENT);
+        when(screeningRepository.findActiveProgramIdById(SCREENING_ID)).thenReturn(Optional.of(PROGRAM_ID));
+        when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(lockedProgram));
+        when(screeningRepository.findActiveByIdForUpdate(SCREENING_ID)).thenReturn(Optional.of(screening));
+
+        assertThatThrownBy(() -> service.withdraw(SCREENING_ID, 0))
+                .isInstanceOf(InvalidStateException.class);
+
+        InOrder locks = inOrder(screeningRepository, programRepository);
+        locks.verify(screeningRepository).findActiveProgramIdById(SCREENING_ID);
+        locks.verify(programRepository).findByIdForUpdate(PROGRAM_ID);
+        locks.verify(screeningRepository).findActiveByIdForUpdate(SCREENING_ID);
+        assertThat(screening.getDeletedAt()).isNull();
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void screeningWriteFailureStopsCreationBeforeAuditAndReliesOnTheTransactionForRoleRollback() {
+        ProgramEntity program = program(ProgramState.CREATED);
+        when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(program));
+        when(roleRepository.findRole(PROGRAM_ID, USER_ID)).thenReturn(Optional.empty());
+        when(screeningRepository.saveAndFlush(any(ScreeningEntity.class)))
+                .thenThrow(new DataIntegrityViolationException("simulated write failure"));
+
+        assertThatThrownBy(() -> service.create(PROGRAM_ID, completeRequest("Hall"), "write-failure"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        verify(roleRepository).saveAndFlush(any(ProgramRoleEntity.class));
         verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
     }
 
@@ -447,14 +525,14 @@ class ScreeningPreparationServiceTest {
                 .isInstanceOf(IllegalStateException.class);
 
         ScreeningEntity update = screening(ProgramState.CREATED, ScreeningState.CREATED, 0);
-        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(update));
+        stubActive(update);
         ScreeningUpdateRequest patch = new ScreeningUpdateRequest();
         patch.setGenre("New Genre");
         assertThatThrownBy(() -> service.update(SCREENING_ID, 0, patch, "audit-update"))
                 .isInstanceOf(IllegalStateException.class);
 
         ScreeningEntity withdrawal = screening(ProgramState.CREATED, ScreeningState.CREATED, 0);
-        when(screeningRepository.findActiveByIdForUpdate(SCREENING_ID)).thenReturn(Optional.of(withdrawal));
+        stubActive(withdrawal);
         assertThatThrownBy(() -> service.withdraw(SCREENING_ID, 0))
                 .isInstanceOf(IllegalStateException.class);
     }
@@ -497,6 +575,14 @@ class ScreeningPreparationServiceTest {
         return screening;
     }
 
+    private void stubActive(ScreeningEntity screening) {
+        when(screeningRepository.findActiveProgramIdById(SCREENING_ID)).thenReturn(Optional.of(PROGRAM_ID));
+        when(programRepository.findByIdForUpdate(PROGRAM_ID))
+                .thenReturn(Optional.of(screening.getProgram()));
+        when(screeningRepository.findActiveById(SCREENING_ID)).thenReturn(Optional.of(screening));
+        when(screeningRepository.findActiveByIdForUpdate(SCREENING_ID)).thenReturn(Optional.of(screening));
+    }
+
     private static ScreeningCreateRequest completeRequest(String hall) {
         return new ScreeningCreateRequest("Film", "Cast", "Genre", 120, hall, START, END);
     }
@@ -533,13 +619,24 @@ class ScreeningPreparationServiceTest {
     }
 
     private static Stream<Arguments> forbiddenWithdrawals() {
-        return Stream.of(
-                Arguments.of(ProgramState.ASSIGNMENT, ScreeningState.CREATED),
-                Arguments.of(ProgramState.ASSIGNMENT, ScreeningState.SUBMITTED),
-                Arguments.of(ProgramState.SUBMISSION, ScreeningState.REVIEWED),
-                Arguments.of(ProgramState.SUBMISSION, ScreeningState.APPROVED),
-                Arguments.of(ProgramState.SUBMISSION, ScreeningState.SCHEDULED),
-                Arguments.of(ProgramState.SUBMISSION, ScreeningState.REJECTED));
+        Stream<Arguments> submittedBeforeSubmission = Stream.of(
+                Arguments.of(ProgramState.CREATED, ScreeningState.SUBMITTED));
+        Stream<Arguments> afterAssignment = Stream.of(
+                ProgramState.ASSIGNMENT,
+                ProgramState.REVIEW,
+                ProgramState.SCHEDULING,
+                ProgramState.FINAL_PUBLICATION,
+                ProgramState.DECISION,
+                ProgramState.ANNOUNCED)
+                .flatMap(programState -> Stream.of(ScreeningState.CREATED, ScreeningState.SUBMITTED)
+                        .map(screeningState -> Arguments.of(programState, screeningState)));
+        Stream<Arguments> nonWithdrawableScreeningStates = Stream.of(
+                ScreeningState.REVIEWED,
+                ScreeningState.APPROVED,
+                ScreeningState.SCHEDULED,
+                ScreeningState.REJECTED)
+                .map(screeningState -> Arguments.of(ProgramState.SUBMISSION, screeningState));
+        return Stream.concat(submittedBeforeSubmission, Stream.concat(afterAssignment, nonWithdrawableScreeningStates));
     }
 
     private static void set(Object target, String fieldName, Object value) {

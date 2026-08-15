@@ -257,7 +257,7 @@ Every field is optional for a draft. Supplied strings are trimmed and nonblank, 
 
 ### PATCH `/api/v1/screenings/{screeningId}`
 
-UC-S1 / FR-5. Owning `SUBMITTER`; `Idempotency-Key` and Screening `If-Match` required. Allowed only for active `CREATED` drafts while the Program is `CREATED` or `SUBMISSION`. Body contains at least one draft field; null is not an implicit clear unless a future field-specific contract explicitly permits it. Only the seven creation fields above are editable; internal identity, ownership, workflow, handler, final scheduling, review, audit timestamp, deletion, and version fields are rejected at deserialization. Validate the complete resulting draft and return `200` plus updated ETag.
+UC-S1 / FR-5. Owning `SUBMITTER`; `Idempotency-Key` and Screening `If-Match` required. Allowed only for active `CREATED` drafts while the Program is `CREATED` or `SUBMISSION`. Body contains at least one draft field; null is not an implicit clear unless a future field-specific contract explicitly permits it. Only the seven creation fields above are editable; internal identity, ownership, workflow, handler, final scheduling, review, audit timestamp, deletion, and version fields are rejected at deserialization. Validate the complete resulting draft and return `200` plus updated ETag. The transaction resolves the active Screening's Program, locks that Program before loading and mutating the active draft, and rechecks ownership, `SUBMITTER` membership, current Program phase, Screening state, and optimistic version under that lifecycle-serialization lock. An exact completed idempotency replay returns the stored response without re-running resource/state checks or mutation.
 
 ### DELETE `/api/v1/screenings/{screeningId}`
 
@@ -266,7 +266,7 @@ UC-S1 / FR-6.3. Owning `SUBMITTER`; Screening `If-Match` required. Soft-delete w
 - Screening is `CREATED`; or
 - Screening is `SUBMITTED` and Program is still `SUBMISSION`.
 
-Audit atomically and return `204`. The Screening is selected as an active row with a pessimistic write lock and still uses its optimistic version. After Program enters `ASSIGNMENT`, withdrawal is `409`; a repeated withdrawal receives the same generic safe `404` as another unavailable Screening and does not add another audit record.
+Audit atomically and return `204`. The transaction first resolves the active Screening's Program, locks the Program, and then selects the active Screening with a pessimistic write lock, matching lifecycle lock order; the Screening still uses its optimistic version. Ownership, `SUBMITTER` membership, phase, state, and version are rechecked after those locks. After Program enters `ASSIGNMENT`, withdrawal is `409`; a repeated withdrawal receives the same generic safe `404` as another unavailable Screening and does not add another audit record.
 
 ### POST `/api/v1/screenings/{screeningId}/submit`
 

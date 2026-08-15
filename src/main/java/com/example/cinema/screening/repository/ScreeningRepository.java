@@ -22,6 +22,9 @@ public interface ScreeningRepository extends JpaRepository<ScreeningEntity, UUID
     @Query("select s from ScreeningEntity s where s.id = :screeningId and s.deletedAt is null")
     Optional<ScreeningEntity> findActiveById(@Param("screeningId") UUID screeningId);
 
+    @Query("select s.program.id from ScreeningEntity s where s.id = :screeningId and s.deletedAt is null")
+    Optional<UUID> findActiveProgramIdById(@Param("screeningId") UUID screeningId);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select s from ScreeningEntity s where s.id = :screeningId and s.deletedAt is null")
     Optional<ScreeningEntity> findActiveByIdForUpdate(@Param("screeningId") UUID screeningId);

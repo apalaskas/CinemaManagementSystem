@@ -99,27 +99,26 @@ public class ScreeningPreparationService {
             long expectedVersion,
             ScreeningUpdateRequest request,
             String idempotencyKey) {
-        ScreeningEntity screening = activeScreening(screeningId);
-        authorization.requireOwner(screening);
-        authorization.requireSubmitter(screening.getProgram().getId());
         AuthenticatedUserIdentity actor = authorization.currentUser();
         DraftPatch patch = validatePatch(request);
         IdempotencyResult result = idempotencyManager.execute(
                 UPDATE_OPERATION,
                 idempotencyKey,
                 patch.canonical(screeningId, expectedVersion),
-                () -> updateDraft(actor, screening, expectedVersion, patch));
+                () -> updateDraft(actor, screeningId, expectedVersion, patch));
         return result(result);
     }
 
     @Transactional
     public void withdraw(UUID screeningId, long expectedVersion) {
+        UUID programId = activeProgramId(screeningId);
+        ProgramEntity program = lockedProgram(programId);
         ScreeningEntity screening = screeningRepository.findActiveByIdForUpdate(screeningId)
                 .orElseThrow(ResourceNotFoundException::new);
         authorization.requireOwner(screening);
-        authorization.requireSubmitter(screening.getProgram().getId());
+        authorization.requireSubmitter(programId);
         checkVersion(screening, expectedVersion);
-        validateWithdrawalState(screening);
+        validateWithdrawalState(screening, program.getState());
 
         Map<String, ?> oldSnapshot = screeningSnapshot(screening);
         screening.withdraw(clock.instant());
@@ -189,12 +188,17 @@ public class ScreeningPreparationService {
 
     private StoredCommandResponse updateDraft(
             AuthenticatedUserIdentity actor,
-            ScreeningEntity screening,
+            UUID screeningId,
             long expectedVersion,
             DraftPatch patch) {
+        UUID programId = activeProgramId(screeningId);
+        ProgramEntity program = lockedProgram(programId);
+        ScreeningEntity screening = activeScreening(screeningId);
+        authorization.requireOwner(screening);
+        authorization.requireSubmitter(programId);
         checkVersion(screening, expectedVersion);
         if (screening.getState() != ScreeningState.CREATED
-                || !draftsAllowed(screening.getProgram().getState())) {
+                || !draftsAllowed(program.getState())) {
             throw new InvalidStateException();
         }
 
@@ -222,6 +226,16 @@ public class ScreeningPreparationService {
                 .orElseThrow(ResourceNotFoundException::new);
     }
 
+    private UUID activeProgramId(UUID screeningId) {
+        return screeningRepository.findActiveProgramIdById(screeningId)
+                .orElseThrow(ResourceNotFoundException::new);
+    }
+
+    private ProgramEntity lockedProgram(UUID programId) {
+        return programRepository.findByIdForUpdate(programId)
+                .orElseThrow(ResourceNotFoundException::new);
+    }
+
     private static void checkVersion(ScreeningEntity screening, long expectedVersion) {
         if (screening.getVersion() != expectedVersion) {
             throw new OptimisticConcurrencyConflictException();
@@ -232,8 +246,7 @@ public class ScreeningPreparationService {
         return state == ProgramState.CREATED || state == ProgramState.SUBMISSION;
     }
 
-    private static void validateWithdrawalState(ScreeningEntity screening) {
-        ProgramState programState = screening.getProgram().getState();
+    private static void validateWithdrawalState(ScreeningEntity screening, ProgramState programState) {
         if (screening.getState() == ScreeningState.CREATED && draftsAllowed(programState)) {
             return;
         }
