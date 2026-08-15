@@ -25,6 +25,7 @@ import jakarta.persistence.Table;
 @Table(name = "review")
 public class ReviewEntity {
 
+    public static final int MAXIMUM_COMMENT_LENGTH = 4000;
     private static final BigDecimal MINIMUM_SCORE = new BigDecimal("0.00");
     private static final BigDecimal MAXIMUM_SCORE = new BigDecimal("10.00");
 
@@ -64,7 +65,7 @@ public class ReviewEntity {
         this.screening = requireNonNull(screening, "screening");
         this.staff = requireNonNull(staff, "staff");
         this.numericScore = validateScore(numericScore);
-        this.detailedComments = requireNonBlank(detailedComments, "detailedComments");
+        this.detailedComments = validateComments(detailedComments);
         this.createdAt = requireNonNull(createdAt, "createdAt");
     }
 
@@ -73,7 +74,19 @@ public class ReviewEntity {
         if (score.compareTo(MINIMUM_SCORE) < 0 || score.compareTo(MAXIMUM_SCORE) > 0) {
             throw new IllegalArgumentException("numericScore must be between 0.00 and 10.00 inclusive");
         }
+        if (score.scale() > 2) {
+            throw new IllegalArgumentException("numericScore must have at most two decimal places");
+        }
         return score;
+    }
+
+    private static String validateComments(String comments) {
+        String normalized = requireNonBlank(comments, "detailedComments");
+        if (normalized.length() > MAXIMUM_COMMENT_LENGTH) {
+            throw new IllegalArgumentException(
+                    "detailedComments must not exceed " + MAXIMUM_COMMENT_LENGTH + " characters");
+        }
+        return normalized;
     }
 
     public UUID getId() {

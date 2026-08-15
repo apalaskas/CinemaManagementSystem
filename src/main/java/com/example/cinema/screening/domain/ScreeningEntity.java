@@ -263,6 +263,24 @@ public class ScreeningEntity {
         state = ScreeningState.SUBMITTED;
     }
 
+    public void assignHandler(UserEntity assignedHandler) {
+        if (deletedAt != null || state != ScreeningState.SUBMITTED) {
+            throw new IllegalStateException("Only an active SUBMITTED Screening may receive a handler");
+        }
+        if (handler != null) {
+            throw new IllegalStateException("A Screening may have only one handler");
+        }
+        handler = requireNonNull(assignedHandler, "assignedHandler");
+    }
+
+    public void markReviewed() {
+        if (deletedAt != null || state != ScreeningState.SUBMITTED || handler == null) {
+            throw new IllegalStateException(
+                    "Only an active handled SUBMITTED Screening may become REVIEWED");
+        }
+        state = ScreeningState.REVIEWED;
+    }
+
     public void rejectForMissingFinalSubmission(String reason) {
         if (state != ScreeningState.APPROVED || finalSubmittedAt != null) {
             throw new IllegalStateException(

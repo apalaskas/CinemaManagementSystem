@@ -74,6 +74,7 @@ import com.example.cinema.common.api.PageResponse;
 import com.example.cinema.screening.api.ScreeningController;
 import com.example.cinema.screening.service.ScreeningPreparationService;
 import com.example.cinema.screening.service.ScreeningSubmissionService;
+import com.example.cinema.screening.service.ScreeningAssignmentReviewService;
 
 import jakarta.servlet.Filter;
 import jakarta.validation.Valid;
@@ -114,6 +115,7 @@ class InfrastructureWebSecurityTest {
     @MockitoBean SearchAndVisibilityService searchAndVisibilityService;
     @MockitoBean ScreeningPreparationService screeningPreparationService;
     @MockitoBean ScreeningSubmissionService screeningSubmissionService;
+    @MockitoBean ScreeningAssignmentReviewService screeningAssignmentReviewService;
 
     @BeforeEach
     void user() {
@@ -176,6 +178,24 @@ class InfrastructureWebSecurityTest {
                         "dddddddd-dddd-dddd-dddd-dddddddddddd")
                         .header("If-Match", "\"0\"")
                         .header("Idempotency-Key", "submit-key"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/handler",
+                        "dddddddd-dddd-dddd-dddd-dddddddddddd")
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", "handler-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"staffUserId\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/review",
+                        "dddddddd-dddd-dddd-dddd-dddddddddddd")
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", "review-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"numericScore\":8.5,\"detailedComments\":\"Good\"}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
     }

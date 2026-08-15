@@ -37,6 +37,7 @@ class ProgramManagementMigrationContractTest {
                 .contains("REFERENCES program (program_id) ON DELETE CASCADE")
                 .doesNotContain("REFERENCES cms_user (user_id) ON DELETE CASCADE");
         assertThat(reviews)
+                .contains("CONSTRAINT uk_review_screening UNIQUE (screening_id)")
                 .contains("REFERENCES screening (screening_id) ON DELETE CASCADE")
                 .doesNotContain("REFERENCES cms_user (user_id) ON DELETE CASCADE");
     }

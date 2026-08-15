@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.example.cinema.common.api.EntityTagParser;
 import com.example.cinema.common.error.InvalidInputException;
 import com.example.cinema.screening.service.ScreeningCommandResult;
+import com.example.cinema.screening.service.ScreeningAssignmentReviewService;
 import com.example.cinema.screening.service.ScreeningPreparationService;
 import com.example.cinema.screening.service.ScreeningSubmissionService;
 
@@ -29,14 +30,17 @@ public class ScreeningController {
 
     private final ScreeningPreparationService service;
     private final ScreeningSubmissionService submissionService;
+    private final ScreeningAssignmentReviewService assignmentReviewService;
     private final EntityTagParser entityTagParser;
 
     public ScreeningController(
             ScreeningPreparationService service,
             ScreeningSubmissionService submissionService,
+            ScreeningAssignmentReviewService assignmentReviewService,
             EntityTagParser entityTagParser) {
         this.service = service;
         this.submissionService = submissionService;
+        this.assignmentReviewService = assignmentReviewService;
         this.entityTagParser = entityTagParser;
     }
 
@@ -93,6 +97,39 @@ public class ScreeningController {
                 idempotencyKey);
         return ResponseEntity.status(result.status())
                 .eTag(entityTagParser.format(result.body().version()))
+                .body(result.body());
+    }
+
+    @PostMapping(path = "/screenings/{screeningId}/handler", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<ScreeningHandlerAssignmentResponse> assignHandler(
+            @PathVariable UUID screeningId,
+            @RequestHeader(HttpHeaders.IF_MATCH) String ifMatch,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody ScreeningHandlerAssignmentRequest request) {
+        ScreeningCommandResult<ScreeningHandlerAssignmentResponse> result =
+                assignmentReviewService.assignHandler(
+                        screeningId,
+                        entityTagParser.parseVersion(ifMatch),
+                        request,
+                        idempotencyKey);
+        return ResponseEntity.status(result.status())
+                .eTag(entityTagParser.format(result.body().version()))
+                .body(result.body());
+    }
+
+    @PostMapping(path = "/screenings/{screeningId}/review", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<ScreeningReviewResponse> submitReview(
+            @PathVariable UUID screeningId,
+            @RequestHeader(HttpHeaders.IF_MATCH) String ifMatch,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody ScreeningReviewRequest request) {
+        ScreeningCommandResult<ScreeningReviewResponse> result = assignmentReviewService.submitReview(
+                screeningId,
+                entityTagParser.parseVersion(ifMatch),
+                request,
+                idempotencyKey);
+        return ResponseEntity.status(result.status())
+                .eTag(entityTagParser.format(result.body().screeningVersion()))
                 .body(result.body());
     }
 }

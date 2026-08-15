@@ -121,6 +121,31 @@ class EntityInvariantTest {
                 UUID.randomUUID(), screening, user, new BigDecimal("10.01"), "Detailed review", Instant.EPOCH));
         assertThatIllegalArgumentException().isThrownBy(() -> new ReviewEntity(
                 UUID.randomUUID(), screening, user, new BigDecimal("8.00"), "  ", Instant.EPOCH));
+        assertThatIllegalArgumentException().isThrownBy(() -> new ReviewEntity(
+                UUID.randomUUID(), screening, user, new BigDecimal("8.001"), "Detailed review", Instant.EPOCH));
+        assertThatIllegalArgumentException().isThrownBy(() -> new ReviewEntity(
+                UUID.randomUUID(), screening, user, new BigDecimal("8.00"),
+                "x".repeat(ReviewEntity.MAXIMUM_COMMENT_LENGTH + 1), Instant.EPOCH));
+    }
+
+    @Test
+    void handlerAssignmentIsSingleAndReviewTransitionRequiresHandledSubmission() {
+        ScreeningEntity screening = new ScreeningEntity(
+                UUID.randomUUID(), validProgram(), user, "Film", "Cast", "Drama", 90,
+                "Hall", Instant.parse("2027-02-01T10:00:00Z"),
+                Instant.parse("2027-02-01T12:00:00Z"), Instant.EPOCH);
+        UserEntity staff = new UserEntity(UUID.randomUUID(), "staff", "hash", "Staff Member");
+
+        assertThatIllegalStateException().isThrownBy(() -> screening.assignHandler(staff));
+        screening.submit();
+        screening.assignHandler(staff);
+        assertThat(screening.getHandler()).isSameAs(staff);
+        assertThat(screening.getState()).isEqualTo(ScreeningState.SUBMITTED);
+        assertThatIllegalStateException().isThrownBy(() -> screening.assignHandler(staff));
+
+        screening.markReviewed();
+        assertThat(screening.getState()).isEqualTo(ScreeningState.REVIEWED);
+        assertThatIllegalStateException().isThrownBy(screening::markReviewed);
     }
 
     @Test

@@ -282,17 +282,17 @@ UC-S3 / FR-7. Managing `PROGRAMMER`; `Idempotency-Key` and Screening `If-Match` 
 { "staffUserId": "canonical-uuid" }
 ```
 
-Require Program `ASSIGNMENT`, active `SUBMITTED` Screening without a handler, and target in frozen STAFF. Set exactly one handler, audit, and return `200` with updated response/ETag. Reassignment is not part of the canonical contract.
+Authenticate and establish the active Screening's Program before idempotency processing, require the requester to be that Program's `PROGRAMMER`, and recheck authorization after taking the Program pessimistic-write lock. Require Program `ASSIGNMENT`, a registered target whose sole Program role is `STAFF` in the frozen set, and an active `SUBMITTED` Screening selected `FOR UPDATE` without a handler. The target therefore cannot simultaneously be `PROGRAMMER` or `SUBMITTER`. Check the Screening `If-Match` version, set exactly one handler without changing Screening state, flush the optimistic version, write a safe handler-assignment audit, store the successful idempotency result, and return `200` with `screeningId`, handler summary, `SUBMITTED` state, `version`, and updated ETag. Reassignment is not part of the canonical contract. Exact completed retries replay the stored result; a changed target, operation, or request hash returns `409`.
 
 ### POST `/api/v1/screenings/{screeningId}/review`
 
 UC-S3 / FR-7. Assigned `STAFF` handler; `Idempotency-Key` and Screening `If-Match` required.
 
 ```json
-{ "score": 8.50, "detailedComments": "Detailed nonblank assessment." }
+{ "numericScore": 8.50, "detailedComments": "Detailed nonblank assessment." }
 ```
 
-Require Program `REVIEW`, active `SUBMITTED`, score `0.00..10.00`, nonblank detailed comments, and no existing Review. Atomically insert the one Review, set Screening `REVIEWED`, audit, and return `201` with the staff-visible detail/ETag.
+Authenticate and require both assigned-handler identity and that Program's `STAFF` role before idempotency processing, then recheck them after taking the Program and active Screening pessimistic-write locks. Require Program `REVIEW`, active `SUBMITTED`, `numericScore` in `0.00..10.00` inclusive with at most two fractional digits, trimmed nonblank `detailedComments` of at most 4,000 Unicode characters, and no existing Review. Atomically insert one Review, set Screening `REVIEWED`, flush the optimistic Screening version, write one safe audit, store the successful idempotency result, and return `201` with `reviewId`, `screeningId`, `REVIEWED` state, score, comments, reviewer display summary, `createdAt`, `screeningVersion`, and ETag. The Review `screening_id` unique constraint is the final concurrent-duplicate defense. Duplicate/concurrent attempts, stale versions, lifecycle conflicts, and lock failures return safe `409` responses; any insert, Screening update, audit, or idempotency failure rolls back the complete command.
 
 ### POST `/api/v1/screenings/{screeningId}/decision`
 

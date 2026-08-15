@@ -82,7 +82,7 @@ These are closed decisions:
 11. A `PROGRAMMER` cannot create or submit a Screening in a Program they manage.
 12. A `STAFF` user cannot become a `SUBMITTER` in the same Program. More generally, the single-role constraint prevents all conflicting combinations.
 13. Every active submitted Screening has exactly one handler before the Program enters `REVIEW`. The handler must belong to that Program's frozen `STAFF` set.
-14. A Review score is in the implementation range **0.00 through 10.00 inclusive** and detailed comments are nonblank. There is at most one Review per Screening.
+14. A Review score is in the implementation range **0.00 through 10.00 inclusive**, with at most two fractional digits. Detailed comments are trimmed, nonblank, and limited to 4,000 Unicode characters. The 4,000-character application bound resolves the otherwise unspecified "length-bounded" UC-S3 requirement while remaining within the relational `TEXT` column. There is at most one Review per Screening.
 15. A `SUBMITTER` may see their Review only after a `PROGRAMMER` has made an `APPROVE` or `REJECT` decision. Before that, review fields are redacted even from the owner.
 16. Public Program auditorium information is derived from its active `SCHEDULED` Screenings; Program has no auditorium column.
 17. Scheduling conflict intervals are half-open: `existingStart < requestedEnd AND existingEnd > requestedStart`. Adjacent intervals are allowed.
