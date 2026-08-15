@@ -8,6 +8,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Optional;
+import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockFilterChain;
@@ -17,6 +18,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import com.example.cinema.common.error.ApiProblemFactory;
 import com.example.cinema.common.error.ProblemResponseWriter;
 import com.example.cinema.user.authentication.CurrentUser;
+import com.example.cinema.user.authentication.AuthenticatedUserIdentity;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -42,6 +44,30 @@ class RateLimitFilterTest {
         assertThat(rejected.getContentAsString())
                 .contains("RATE_LIMIT_EXCEEDED")
                 .doesNotContain("Exception", "stackTrace", "SQL");
+    }
+
+    @Test
+    void keysAuthenticatedRequestsByUserIdInsteadOfSharedClientAddress() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+        InProcessRateLimiter limiter = new InProcessRateLimiter(clock, InProcessRateLimiterTest.properties(10, 10));
+        CurrentUser currentUser = mock(CurrentUser.class);
+        AuthenticatedUserIdentity firstUser = new AuthenticatedUserIdentity(UUID.randomUUID(), "alice", "Alice");
+        AuthenticatedUserIdentity secondUser = new AuthenticatedUserIdentity(UUID.randomUUID(), "bob", "Bob");
+        when(currentUser.optional()).thenReturn(
+                Optional.of(firstUser), Optional.of(secondUser), Optional.of(firstUser));
+        RateLimitFilter filter = new RateLimitFilter(limiter, currentUser,
+                new ProblemResponseWriter(new ApiProblemFactory(clock), new ObjectMapper()));
+
+        MockHttpServletResponse first = new MockHttpServletResponse();
+        filter.doFilter(request(), first, new MockFilterChain());
+        MockHttpServletResponse second = new MockHttpServletResponse();
+        filter.doFilter(request(), second, new MockFilterChain());
+        MockHttpServletResponse repeated = new MockHttpServletResponse();
+        filter.doFilter(request(), repeated, new MockFilterChain());
+
+        assertThat(first.getStatus()).isEqualTo(200);
+        assertThat(second.getStatus()).isEqualTo(200);
+        assertThat(repeated.getStatus()).isEqualTo(429);
     }
 
     private static MockHttpServletRequest request() {

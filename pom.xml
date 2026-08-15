@@ -131,7 +131,6 @@
                                     <destFileName>mockito-core-agent.jar</destFileName>
                                 </artifactItem>
                             </artifactItems>
-                            <overWriteReleases>true</overWriteReleases>
                         </configuration>
                     </execution>
                 </executions>

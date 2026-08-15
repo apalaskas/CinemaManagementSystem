@@ -16,8 +16,10 @@ import com.example.cinema.common.error.RoleConflictException;
 import com.example.cinema.program.domain.ProgramRoleEntity;
 import com.example.cinema.program.domain.ProgramRoleType;
 import com.example.cinema.program.repository.ProgramRoleRepository;
+import com.example.cinema.screening.domain.ScreeningEntity;
 import com.example.cinema.user.authentication.AuthenticatedUserIdentity;
 import com.example.cinema.user.authentication.CurrentUser;
+import com.example.cinema.user.domain.UserEntity;
 
 class ContextAwareAuthorizationServiceTest {
 
@@ -55,5 +57,22 @@ class ContextAwareAuthorizationServiceTest {
         assertThatThrownBy(() -> service.requireVisible(Optional.empty()))
                 .isInstanceOf(ResourceNotFoundException.class)
                 .hasMessage("The requested resource was not found.");
+    }
+
+    @Test
+    void checksScreeningOwnershipAndHandlerByAuthenticatedDomainId() {
+        ScreeningEntity screening = mock(ScreeningEntity.class);
+        UserEntity submitter = mock(UserEntity.class);
+        UserEntity handler = mock(UserEntity.class);
+        UUID handlerId = UUID.randomUUID();
+        when(submitter.getId()).thenReturn(userId);
+        when(handler.getId()).thenReturn(handlerId);
+        when(screening.getSubmitter()).thenReturn(submitter);
+        when(screening.getHandler()).thenReturn(handler);
+
+        assertThat(service.isScreeningOwner(screening, userId)).isTrue();
+        assertThat(service.isScreeningOwner(screening, handlerId)).isFalse();
+        assertThat(service.isScreeningHandler(screening, handlerId)).isTrue();
+        assertThat(service.isScreeningHandler(screening, userId)).isFalse();
     }
 }

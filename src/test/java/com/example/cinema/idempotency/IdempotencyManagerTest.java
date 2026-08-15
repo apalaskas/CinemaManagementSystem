@@ -20,9 +20,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import com.example.cinema.common.config.CinemaProperties;
 import com.example.cinema.common.error.ConflictException;
+import com.example.cinema.common.error.InvalidInputException;
 import com.example.cinema.user.authentication.AuthenticatedUserIdentity;
 import com.example.cinema.user.authentication.CurrentUser;
 
@@ -61,6 +63,24 @@ class IdempotencyManagerTest {
     }
 
     @Test
+    void storesOnlyTheSuccessfulResponseAfterExecutingANewCommand() {
+        Map<String, Object> request = Map.of("name", "Festival");
+        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.empty());
+        when(repository.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        IdempotencyResult result = manager.execute("PROGRAM.CREATE", "key-1", request,
+                () -> new StoredCommandResponse(201, "{\"id\":\"one\"}"));
+
+        assertThat(result).isEqualTo(new IdempotencyResult(201, "{\"id\":\"one\"}", false));
+        ArgumentCaptor<IdempotencyRecordEntity> completed = ArgumentCaptor.forClass(IdempotencyRecordEntity.class);
+        verify(repository).save(completed.capture());
+        assertThat(completed.getValue().getStatus()).isEqualTo(IdempotencyStatus.COMPLETED);
+        assertThat(completed.getValue().getResponseStatus()).isEqualTo(201);
+        assertThat(completed.getValue().getResponseBody()).isEqualTo("{\"id\":\"one\"}");
+        assertThat(completed.getValue().getExpiresAt()).isEqualTo(now.plus(Duration.ofHours(24)));
+    }
+
+    @Test
     void rejectsSameKeyWithDifferentCanonicalPayload() {
         IdempotencyRecordEntity record = record(hasher.hash("PROGRAM.CREATE", Map.of("name", "First")));
         when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.of(record));
@@ -95,6 +115,33 @@ class IdempotencyManagerTest {
                 () -> { throw new IllegalStateException("mutation failed"); }))
                 .isInstanceOf(IllegalStateException.class);
         verify(repository, never()).save(any(IdempotencyRecordEntity.class));
+    }
+
+    @Test
+    void replacesAnExpiredClaimBeforeExecutingTheCommand() {
+        IdempotencyRecordEntity expired = new IdempotencyRecordEntity(
+                UUID.randomUUID(), userId, "PROGRAM.CREATE", "key-1",
+                hasher.hash("PROGRAM.CREATE", Map.of("name", "Old")),
+                now.minus(Duration.ofHours(25)), now);
+        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.of(expired));
+        when(repository.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        IdempotencyResult result = manager.execute("PROGRAM.CREATE", "key-1", Map.of("name", "New"),
+                () -> new StoredCommandResponse(201, "{}"));
+
+        assertThat(result.replayed()).isFalse();
+        verify(repository).delete(expired);
+        verify(repository).flush();
+    }
+
+    @Test
+    void rejectsInvalidKeySyntaxBeforeCreatingAClaim() {
+        assertThatThrownBy(() -> manager.execute("PROGRAM.CREATE", "contains a space", Map.of(),
+                () -> new StoredCommandResponse(201, "{}")))
+                .isInstanceOf(InvalidInputException.class)
+                .extracting(error -> ((InvalidInputException) error).errorCode())
+                .isEqualTo("INVALID_IDEMPOTENCY_KEY");
+        verify(repository, never()).saveAndFlush(any());
     }
 
     @Test

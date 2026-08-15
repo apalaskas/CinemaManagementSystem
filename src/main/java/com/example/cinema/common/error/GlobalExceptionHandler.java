@@ -1,8 +1,8 @@
 package com.example.cinema.common.error;
 
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Arrays;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,9 +60,31 @@ public class GlobalExceptionHandler {
         return validationProblem(request, fields);
     }
 
-    @ExceptionHandler({ConstraintViolationException.class, HandlerMethodValidationException.class})
-    ResponseEntity<ProblemDetail> handleMethodValidation(Exception exception, HttpServletRequest request) {
-        return validationProblem(request, List.of());
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    ResponseEntity<ProblemDetail> handleMethodValidation(
+            HandlerMethodValidationException exception,
+            HttpServletRequest request) {
+        List<FieldErrorDetail> fields = exception.getParameterValidationResults().stream()
+                .flatMap(result -> result.getResolvableErrors().stream()
+                        .map(error -> new FieldErrorDetail(
+                                result.getMethodParameter().getParameterName(),
+                                safeValidationMessage(error.getDefaultMessage()))))
+                .sorted(Comparator.comparing(FieldErrorDetail::field))
+                .toList();
+        return validationProblem(request, fields);
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    ResponseEntity<ProblemDetail> handleConstraintValidation(
+            ConstraintViolationException exception,
+            HttpServletRequest request) {
+        List<FieldErrorDetail> fields = exception.getConstraintViolations().stream()
+                .map(violation -> new FieldErrorDetail(
+                        leafProperty(violation.getPropertyPath().toString()),
+                        safeValidationMessage(violation.getMessage())))
+                .sorted(Comparator.comparing(FieldErrorDetail::field))
+                .toList();
+        return validationProblem(request, fields);
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
@@ -113,6 +135,11 @@ public class GlobalExceptionHandler {
 
     private static String safeValidationMessage(String message) {
         return message == null || message.isBlank() ? "is invalid" : message;
+    }
+
+    private static String leafProperty(String propertyPath) {
+        int separator = propertyPath.lastIndexOf('.');
+        return separator >= 0 ? propertyPath.substring(separator + 1) : propertyPath;
     }
 
     private static void logInternal(Exception exception, HttpServletRequest request) {

@@ -20,6 +20,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
@@ -36,6 +37,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.cinema.common.api.InfrastructureWebSecurityTest.InfrastructureTestController;
@@ -59,6 +61,7 @@ import com.example.cinema.user.domain.UserEntity;
 import com.example.cinema.user.repository.UserRepository;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 
 @WebMvcTest(controllers = InfrastructureTestController.class)
@@ -102,10 +105,21 @@ class InfrastructureWebSecurityTest {
                 .andExpect(status().isOk())
                 .andExpect(content().string("public"));
 
-        mockMvc.perform(post("/api/v1/test/protected"))
+        mockMvc.perform(post("/api/v1/test/protected").header("X-Correlation-ID", "auth-401"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(header().string("WWW-Authenticate", "Basic realm=\"cinema-management\""))
-                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
+                .andExpect(header().string("X-Correlation-ID", "auth-401"))
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.title").value("Unauthorized"))
+                .andExpect(jsonPath("$.detail").value("Authentication is required."))
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"))
+                .andExpect(jsonPath("$.timestamp").value("2026-01-01T00:00:00Z"))
+                .andExpect(jsonPath("$.traceId").value("auth-401"))
+                .andExpect(jsonPath("$.instance").value("/api/v1/test/protected"))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("Authorization"))))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("password"))));
     }
 
     @Test
@@ -117,7 +131,13 @@ class InfrastructureWebSecurityTest {
 
         mockMvc.perform(post("/api/v1/test/protected").with(httpBasic("alice", "wrong")))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("alice"))))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("wrong"))))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("Basic"))));
     }
 
     @Test
@@ -141,13 +161,32 @@ class InfrastructureWebSecurityTest {
     }
 
     @Test
+    void formatsMethodValidationWithFieldErrors() throws Exception {
+        mockMvc.perform(get("/api/v1/programs/validated").param("size", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors", hasSize(1)))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("size"));
+    }
+
+    @Test
     void returnsControlledGenericErrorWithoutSqlStackOrExceptionMessage() throws Exception {
-        mockMvc.perform(post("/api/v1/test/failure").with(httpBasic("alice", "correct")))
+        mockMvc.perform(post("/api/v1/test/failure")
+                        .header("X-Correlation-ID", "failure-500")
+                        .with(httpBasic("alice", "correct")))
                 .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.status").value(500))
+                .andExpect(jsonPath("$.title").value("Internal Server Error"))
+                .andExpect(jsonPath("$.detail").value("The request could not be completed."))
                 .andExpect(jsonPath("$.errorCode").value("INTERNAL_ERROR"))
+                .andExpect(jsonPath("$.timestamp").value("2026-01-01T00:00:00Z"))
+                .andExpect(jsonPath("$.traceId").value("failure-500"))
+                .andExpect(jsonPath("$.instance").value("/api/v1/test/failure"))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("cms_user"))))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("SQL"))))
-                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("stackTrace"))));
+                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("stackTrace"))))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("IllegalStateException"))));
     }
 
     @Test
@@ -160,6 +199,7 @@ class InfrastructureWebSecurityTest {
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getHeader("X-Correlation-ID");
         org.assertj.core.api.Assertions.assertThat(replacement).matches("[0-9a-f-]{36}");
+        org.assertj.core.api.Assertions.assertThat(MDC.get(CorrelationIdFilter.MDC_KEY)).isNull();
     }
 
     @RestController
@@ -178,6 +218,9 @@ class InfrastructureWebSecurityTest {
 
         @GetMapping("/api/v1/programs/forbidden")
         void forbidden() { throw new ForbiddenException(); }
+
+        @GetMapping("/api/v1/programs/validated")
+        int validated(@RequestParam @Min(1) int size) { return size; }
 
         @PostMapping("/api/v1/test/validation")
         void validation(@Valid @RequestBody NameRequest request) { }
