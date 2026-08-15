@@ -43,6 +43,7 @@ import com.example.cinema.program.repository.ProgrammerNameProjection;
 import com.example.cinema.screening.repository.ProgramAuditoriumProjection;
 import com.example.cinema.screening.repository.ProgramScreeningCountProjection;
 import com.example.cinema.screening.repository.ScreeningRepository;
+import com.example.cinema.screening.repository.ReviewRepository;
 import com.example.cinema.user.authentication.AuthenticatedUserIdentity;
 import com.example.cinema.user.authentication.CurrentUser;
 import com.example.cinema.user.domain.UserEntity;
@@ -58,6 +59,7 @@ class SearchAndVisibilityServiceTest {
     @Mock ProgramRepository programRepository;
     @Mock ProgramRoleRepository roleRepository;
     @Mock ScreeningRepository screeningRepository;
+    @Mock ReviewRepository reviewRepository;
     @Mock CurrentUser currentUser;
 
     SearchAndVisibilityService service;
@@ -72,7 +74,7 @@ class SearchAndVisibilityServiceTest {
                 new CinemaProperties.RateLimit(policy, policy, policy, policy, 1000, Duration.ofMinutes(5)),
                 new CinemaProperties.Idempotency(Duration.ofHours(24)));
         service = new SearchAndVisibilityService(
-                programRepository, roleRepository, screeningRepository, currentUser, properties);
+                programRepository, roleRepository, screeningRepository, reviewRepository, currentUser, properties);
     }
 
     @Test

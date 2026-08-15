@@ -17,7 +17,7 @@ import com.example.cinema.screening.domain.ScreeningState;
 
 import jakarta.persistence.LockModeType;
 
-public interface ScreeningRepository extends JpaRepository<ScreeningEntity, UUID> {
+public interface ScreeningRepository extends JpaRepository<ScreeningEntity, UUID>, ScreeningSearchRepository {
 
     @Query("select s from ScreeningEntity s where s.id = :screeningId and s.deletedAt is null")
     Optional<ScreeningEntity> findActiveById(@Param("screeningId") UUID screeningId);

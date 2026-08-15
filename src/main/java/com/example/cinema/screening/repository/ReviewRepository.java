@@ -1,5 +1,6 @@
 package com.example.cinema.screening.repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -16,4 +17,7 @@ public interface ReviewRepository extends JpaRepository<ReviewEntity, UUID> {
 
     @Query("select r from ReviewEntity r where r.screening.id = :screeningId")
     Optional<ReviewEntity> findByScreeningId(@Param("screeningId") UUID screeningId);
+
+    @Query("select r from ReviewEntity r join fetch r.staff where r.screening.id in :screeningIds")
+    List<ReviewEntity> findAllWithStaffByScreeningIds(@Param("screeningIds") List<UUID> screeningIds);
 }

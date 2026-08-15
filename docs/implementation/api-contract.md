@@ -342,13 +342,15 @@ Candidate auditorium never participates. Scheduling runs in a MySQL `SERIALIZABL
 
 UC-S5 / FR-10, FR-11. Anonymous allowed.
 
-Optional trimmed filters: `filmTitle`, `cast`, `genre`, `dateFrom`, `dateTo`; all supplied filters combine with AND. Each textual filter is case-insensitive, is split on whitespace after trimming, and requires every word to occur in that same field. Date bounds apply to `startTime`.
+Optional trimmed filters: `filmTitle`, `cast`, `genre`, `fromDateTime`, `toDateTime`; all supplied filter categories combine with AND. Each textual filter is case-insensitive, is split on whitespace after trimming, ignores empty tokens, treats `%`, `_`, and the escape character literally, and requires every entered word to occur in that same field. Date bounds apply inclusively to `startTime`: `startTime >= fromDateTime` and `startTime <= toDateTime`. Reject an inverted range, `page < 0`, a `size` outside `1..100`, or a view other than the exact values below with safe `400` responses. Blank text filters are absent. `page` defaults to `0`; `size` defaults to `20` and is capped by the configured maximum of `100`.
 
-`view=general` (default) orders by genre, film title, UUID. `view=timetable` orders by start time, UUID. Apply relationship-aware visibility and redaction before pagination in MySQL and return a page of Screening summaries.
+`view=GENERAL` (default) orders by case-insensitive genre, case-insensitive film title, then Screening UUID, all ascending. `view=TIMETABLE` orders by `startTime`, case-insensitive film title, then Screening UUID, all ascending. Filters, active-row and role-visibility predicates, count, ordering, offset, and limit execute in MySQL before projection; totals therefore contain only visible rows. Return `PageResponse<ScreeningViewResponse>`. The collection uses the Screening-search rate-limit group and returns safe `429` with `Retry-After` when exhausted.
+
+Anonymous callers and ordinary authenticated users may search only an `ANNOUNCED` Program and receive active `SCHEDULED` Screenings as `PublicScreeningResponse` containing only `screeningId`, `filmTitle`, `genre`, final `startTime`/`endTime`, and `finalAuditoriumName`. A Program-specific `PROGRAMMER` receives every active Screening as `FullScreeningResponse`. A Program-specific `STAFF` member receives full responses for assigned Screenings and may additionally receive public responses that meet visitor visibility. A Program-specific `SUBMITTER` receives full responses for owned Screenings and may additionally receive public responses that meet visitor visibility; Review score/comments remain hidden from that owner until an approval or rejection decision. Roles never apply across Programs. A missing or concealed Program collection returns the generic `404 RESOURCE_NOT_FOUND` response.
 
 ### GET `/api/v1/screenings/{screeningId}`
 
-UC-S5 / FR-11. Anonymous allowed. Load Screening with Program and return the caller's role-appropriate detail. Missing, soft-deleted, nonpublic, or otherwise concealed resources return `404`.
+UC-S5 / FR-11. Anonymous allowed. Apply the identical active-row, same-Program role visibility, Review timing, and public/full projection rules as collection search. Missing, soft-deleted, nonpublic, or otherwise concealed resources return the same generic `404 RESOURCE_NOT_FOUND`; never return `403` merely to confirm a hidden Screening. Public responses never contain candidate auditorium, submitter/handler/Review/decision data, state/history, version, audit, or soft-delete metadata. Full responses contain domain/workflow detail plus safe user summaries, but never credential data.
 
 ## Rate-limit and audit expectations
 

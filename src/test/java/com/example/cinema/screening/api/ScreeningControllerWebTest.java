@@ -60,6 +60,7 @@ import com.example.cinema.screening.service.ScreeningAssignmentReviewService;
 import com.example.cinema.screening.service.ScreeningFinalizationService;
 import com.example.cinema.screening.service.ScreeningPreparationService;
 import com.example.cinema.screening.service.ScreeningSubmissionService;
+import com.example.cinema.search.visibility.SearchAndVisibilityService;
 import com.example.cinema.user.authentication.CurrentUser;
 
 @WebMvcTest(controllers = ScreeningController.class)
@@ -83,6 +84,7 @@ class ScreeningControllerWebTest {
     @MockitoBean ScreeningSubmissionService submissionService;
     @MockitoBean ScreeningAssignmentReviewService assignmentReviewService;
     @MockitoBean ScreeningFinalizationService finalizationService;
+    @MockitoBean SearchAndVisibilityService searchAndVisibilityService;
     @MockitoBean InProcessRateLimiter rateLimiter;
     @MockitoBean CurrentUser currentUser;
     @MockitoBean ProblemResponseWriter problemResponseWriter;

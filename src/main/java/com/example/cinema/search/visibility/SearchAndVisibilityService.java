@@ -9,6 +9,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.Arrays;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,6 +38,18 @@ import com.example.cinema.program.repository.ProgrammerNameProjection;
 import com.example.cinema.screening.repository.ProgramAuditoriumProjection;
 import com.example.cinema.screening.repository.ProgramScreeningCountProjection;
 import com.example.cinema.screening.repository.ScreeningRepository;
+import com.example.cinema.screening.api.FullScreeningResponse;
+import com.example.cinema.screening.api.PublicScreeningResponse;
+import com.example.cinema.screening.api.ScreeningReviewDetailResponse;
+import com.example.cinema.screening.api.ScreeningSearchParameters;
+import com.example.cinema.screening.api.ScreeningSearchView;
+import com.example.cinema.screening.api.ScreeningViewResponse;
+import com.example.cinema.screening.domain.ReviewEntity;
+import com.example.cinema.screening.domain.ScreeningEntity;
+import com.example.cinema.screening.domain.ScreeningState;
+import com.example.cinema.screening.repository.ReviewRepository;
+import com.example.cinema.screening.repository.ScreeningSearchCriteria;
+import com.example.cinema.screening.repository.ScreeningSearchPage;
 import com.example.cinema.user.authentication.CurrentUser;
 import com.example.cinema.user.domain.UserEntity;
 
@@ -46,6 +59,7 @@ public class SearchAndVisibilityService {
     private final ProgramRepository programRepository;
     private final ProgramRoleRepository roleRepository;
     private final ScreeningRepository screeningRepository;
+    private final ReviewRepository reviewRepository;
     private final CurrentUser currentUser;
     private final CinemaProperties.Pagination pagination;
 
@@ -53,11 +67,13 @@ public class SearchAndVisibilityService {
             ProgramRepository programRepository,
             ProgramRoleRepository roleRepository,
             ScreeningRepository screeningRepository,
+            ReviewRepository reviewRepository,
             CurrentUser currentUser,
             CinemaProperties properties) {
         this.programRepository = programRepository;
         this.roleRepository = roleRepository;
         this.screeningRepository = screeningRepository;
+        this.reviewRepository = reviewRepository;
         this.currentUser = currentUser;
         this.pagination = properties.pagination();
     }
@@ -82,6 +98,174 @@ public class SearchAndVisibilityService {
         ProgramEntity program = programRepository.findVisibleById(programId, requesterUserId)
                 .orElseThrow(ResourceNotFoundException::new);
         return project(List.of(program), requesterUserId).getFirst();
+    }
+
+    @Transactional(readOnly = true)
+    public PageResponse<ScreeningViewResponse> searchScreenings(
+            UUID programId, ScreeningSearchParameters parameters) {
+        ValidatedScreeningSearch search = validateScreeningSearch(parameters);
+        UUID requesterUserId = currentUser.optional().map(identity -> identity.userId()).orElse(null);
+        ProgramRoleType requesterRole = roleFor(programId, requesterUserId);
+        ProgramEntity program = programRepository.findById(programId)
+                .orElseThrow(ResourceNotFoundException::new);
+        if (requesterRole == null && program.getState() != ProgramState.ANNOUNCED) {
+            throw new ResourceNotFoundException();
+        }
+        ScreeningSearchPage page = screeningRepository.searchVisible(
+                programId, search.criteria(), requesterUserId, requesterRole, search.page(), search.size());
+        List<ScreeningViewResponse> content = projectScreenings(
+                page.screenings(), requesterUserId, requesterRole);
+        long pages = page.totalElements() == 0 ? 0 : ((page.totalElements() - 1) / search.size()) + 1;
+        return new PageResponse<>(search.page(), search.size(), page.totalElements(),
+                (int) Math.min(Integer.MAX_VALUE, pages), content);
+    }
+
+    @Transactional(readOnly = true)
+    public ScreeningViewResponse viewScreening(UUID screeningId) {
+        UUID requesterUserId = currentUser.optional().map(identity -> identity.userId()).orElse(null);
+        UUID programId = screeningRepository.findActiveProgramIdById(screeningId)
+                .orElseThrow(ResourceNotFoundException::new);
+        ProgramRoleType requesterRole = roleFor(programId, requesterUserId);
+        ScreeningEntity screening = screeningRepository.findVisibleDetail(
+                screeningId, requesterUserId, requesterRole)
+                .orElseThrow(ResourceNotFoundException::new);
+        return projectScreenings(List.of(screening), requesterUserId, requesterRole).getFirst();
+    }
+
+    private ProgramRoleType roleFor(UUID programId, UUID requesterUserId) {
+        if (requesterUserId == null) {
+            return null;
+        }
+        return roleRepository.findRole(programId, requesterUserId)
+                .map(ProgramRoleEntity::getRole).orElse(null);
+    }
+
+    private List<ScreeningViewResponse> projectScreenings(
+            List<ScreeningEntity> screenings,
+            UUID requesterUserId,
+            ProgramRoleType requesterRole) {
+        if (screenings.isEmpty()) {
+            return List.of();
+        }
+        List<UUID> fullIds = screenings.stream()
+                .filter(screening -> isFull(screening, requesterUserId, requesterRole))
+                .map(ScreeningEntity::getId).toList();
+        Map<UUID, ReviewEntity> reviews = new HashMap<>();
+        if (!fullIds.isEmpty()) {
+            reviewRepository.findAllWithStaffByScreeningIds(fullIds)
+                    .forEach(review -> reviews.put(review.getScreening().getId(), review));
+        }
+        List<ScreeningViewResponse> result = new ArrayList<>(screenings.size());
+        for (ScreeningEntity screening : screenings) {
+            if (screening.getDeletedAt() != null) {
+                throw new ResourceNotFoundException();
+            }
+            if (isFull(screening, requesterUserId, requesterRole)) {
+                result.add(fullScreening(screening, reviews.get(screening.getId()), requesterRole));
+            } else if (isPublic(screening)) {
+                result.add(new PublicScreeningResponse(
+                        screening.getId(), screening.getFilmTitle(), screening.getGenre(),
+                        screening.getStartTime(), screening.getEndTime(), screening.getFinalAuditoriumName()));
+            } else {
+                throw new ResourceNotFoundException();
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static boolean isFull(
+            ScreeningEntity screening, UUID requesterUserId, ProgramRoleType requesterRole) {
+        if (requesterUserId == null || requesterRole == null) {
+            return false;
+        }
+        return requesterRole == ProgramRoleType.PROGRAMMER
+                || requesterRole == ProgramRoleType.STAFF
+                        && screening.getHandler() != null
+                        && requesterUserId.equals(screening.getHandler().getId())
+                || requesterRole == ProgramRoleType.SUBMITTER
+                        && requesterUserId.equals(screening.getSubmitter().getId());
+    }
+
+    private static boolean isPublic(ScreeningEntity screening) {
+        return screening.getProgram().getState() == ProgramState.ANNOUNCED
+                && screening.getState() == ScreeningState.SCHEDULED;
+    }
+
+    private static FullScreeningResponse fullScreening(
+            ScreeningEntity screening, ReviewEntity review, ProgramRoleType requesterRole) {
+        UserEntity handler = screening.getHandler();
+        boolean ownerBeforeDecision = requesterRole == ProgramRoleType.SUBMITTER
+                && !reviewVisibleToOwner(screening.getState());
+        return new FullScreeningResponse(
+                screening.getId(), screening.getProgram().getId(), screening.getFilmTitle(),
+                screening.getCastText(), screening.getGenre(), screening.getDurationMinutes(),
+                screening.getCandidateAuditoriumName(), screening.getFinalAuditoriumName(),
+                screening.getStartTime(), screening.getEndTime(), screening.getState(),
+                screening.getConditionalNotes(), screening.getFinalSubmittedAt(),
+                screening.getRejectionReason(), userSummary(screening.getSubmitter()),
+                handler == null ? null : userSummary(handler),
+                review == null || ownerBeforeDecision ? null : reviewSummary(review),
+                screening.getCreatedAt(), screening.getVersion());
+    }
+
+    private static boolean reviewVisibleToOwner(ScreeningState state) {
+        return state == ScreeningState.APPROVED
+                || state == ScreeningState.REJECTED
+                || state == ScreeningState.SCHEDULED;
+    }
+
+    private static ScreeningReviewDetailResponse reviewSummary(ReviewEntity review) {
+        return new ScreeningReviewDetailResponse(
+                review.getId(), review.getNumericScore(), review.getDetailedComments(),
+                userSummary(review.getStaff()), review.getCreatedAt());
+    }
+
+    private static UserSummaryResponse userSummary(UserEntity user) {
+        return new UserSummaryResponse(user.getId(), user.getUsername(), user.getFullName());
+    }
+
+    private ValidatedScreeningSearch validateScreeningSearch(ScreeningSearchParameters parameters) {
+        if (parameters == null) {
+            throw new InvalidInputException("INVALID_SEARCH", "Search parameters are required.");
+        }
+        if (parameters.page() < 0) {
+            throw new InvalidInputException("INVALID_PAGE", "page must be greater than or equal to zero.");
+        }
+        int maximumSize = Math.min(100, pagination.maxSize());
+        int size = parameters.size() == null ? pagination.defaultSize() : parameters.size();
+        if (size < 1 || size > maximumSize) {
+            throw new InvalidInputException(
+                    "INVALID_PAGE_SIZE", "size must be between 1 and " + maximumSize + ".");
+        }
+        if (parameters.fromDateTime() != null && parameters.toDateTime() != null
+                && parameters.fromDateTime().isAfter(parameters.toDateTime())) {
+            throw new InvalidInputException(
+                    "INVALID_DATE_RANGE", "fromDateTime must be before or equal to toDateTime.");
+        }
+        ScreeningSearchView view = parseScreeningView(parameters.view());
+        ScreeningSearchCriteria criteria = new ScreeningSearchCriteria(
+                words(parameters.filmTitle()), words(parameters.cast()), words(parameters.genre()),
+                parameters.fromDateTime(), parameters.toDateTime(), view);
+        return new ValidatedScreeningSearch(criteria, parameters.page(), size);
+    }
+
+    private static ScreeningSearchView parseScreeningView(String value) {
+        if (value == null || value.isBlank()) {
+            return ScreeningSearchView.GENERAL;
+        }
+        try {
+            return ScreeningSearchView.valueOf(value.strip());
+        } catch (IllegalArgumentException exception) {
+            throw new InvalidInputException("INVALID_SCREENING_VIEW", "view must be GENERAL or TIMETABLE.");
+        }
+    }
+
+    private static List<String> words(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(value.strip().toLowerCase(Locale.ROOT).split("\\s+"))
+                .filter(word -> !word.isEmpty()).toList();
     }
 
     private List<ProgramViewResponse> project(List<ProgramEntity> programs, UUID requesterUserId) {
@@ -238,5 +422,8 @@ public class SearchAndVisibilityService {
     }
 
     private record ValidatedSearch(ProgramSearchCriteria criteria, int page, int size) {
+    }
+
+    private record ValidatedScreeningSearch(ScreeningSearchCriteria criteria, int page, int size) {
     }
 }
