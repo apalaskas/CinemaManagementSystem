@@ -25,7 +25,7 @@ import tools.jackson.databind.ObjectMapper;
 class RateLimitFilterTest {
 
     @Test
-    void emitsRetryAfterAndSafeProblemWhenRouteLimitIsExceeded() throws Exception {
+    void appliesScreeningSubmissionPolicyAndEmitsRetryAfterAndSafeProblemWhenExceeded() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
         InProcessRateLimiter limiter = new InProcessRateLimiter(clock, InProcessRateLimiterTest.properties(10, 10));
         CurrentUser currentUser = mock(CurrentUser.class);

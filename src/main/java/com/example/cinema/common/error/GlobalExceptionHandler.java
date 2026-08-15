@@ -41,8 +41,11 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ApplicationException.class)
     ResponseEntity<ProblemDetail> handleApplication(ApplicationException exception, HttpServletRequest request) {
+        List<FieldErrorDetail> fieldErrors = exception instanceof FieldValidationException validation
+                ? validation.fieldErrors()
+                : List.of();
         ProblemDetail problem = problemFactory.create(
-                exception.status(), exception.errorCode(), exception.safeDetail(), request, List.of(),
+                exception.status(), exception.errorCode(), exception.safeDetail(), request, fieldErrors,
                 exception.retryable());
         HttpHeaders headers = new HttpHeaders();
         if (exception instanceof RateLimitExceededException rateLimit) {

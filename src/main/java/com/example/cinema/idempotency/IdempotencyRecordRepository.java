@@ -17,11 +17,10 @@ public interface IdempotencyRecordRepository extends JpaRepository<IdempotencyRe
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
             select r from IdempotencyRecordEntity r
-            where r.userId = :userId and r.operation = :operation and r.idempotencyKey = :idempotencyKey
+            where r.userId = :userId and r.idempotencyKey = :idempotencyKey
             """)
     Optional<IdempotencyRecordEntity> findForUpdate(
             @Param("userId") UUID userId,
-            @Param("operation") String operation,
             @Param("idempotencyKey") String idempotencyKey);
 
     @Modifying

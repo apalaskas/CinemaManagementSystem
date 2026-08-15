@@ -51,16 +51,16 @@ public class IdempotencyManager {
         byte[] requestHash = hasher.hash(operation, canonicalRequestContent);
         Instant now = clock.instant();
 
-        IdempotencyRecordEntity existing = repository.findForUpdate(userId, operation, idempotencyKey).orElse(null);
+        IdempotencyRecordEntity existing = repository.findForUpdate(userId, idempotencyKey).orElse(null);
         if (existing != null && !now.isBefore(existing.getExpiresAt())) {
             repository.delete(existing);
             repository.flush();
             existing = null;
         }
         if (existing != null) {
-            if (!existing.hasRequestHash(requestHash)) {
+            if (!existing.belongsToOperation(operation) || !existing.hasRequestHash(requestHash)) {
                 throw new IdempotencyConflictException("IDEMPOTENCY_KEY_REUSED",
-                        "The Idempotency-Key was already used with different request content.", false);
+                        "The Idempotency-Key was already used for another request.", false);
             }
             if (existing.getStatus() == IdempotencyStatus.IN_PROGRESS) {
                 throw new IdempotencyConflictException("IDEMPOTENCY_REQUEST_IN_PROGRESS",

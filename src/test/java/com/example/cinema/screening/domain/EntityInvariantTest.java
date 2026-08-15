@@ -91,6 +91,24 @@ class EntityInvariantTest {
     }
 
     @Test
+    void submittedScreeningFreezesRegularDraftUpdatesAndDoesNotSetFinalSubmissionTime() {
+        ScreeningEntity screening = new ScreeningEntity(
+                UUID.randomUUID(), validProgram(), user, "Film", "Cast", "Drama", 90,
+                "Hall", Instant.parse("2027-02-01T10:00:00Z"),
+                Instant.parse("2027-02-01T12:00:00Z"), Instant.EPOCH);
+
+        screening.submit();
+
+        assertThat(screening.getState()).isEqualTo(ScreeningState.SUBMITTED);
+        assertThat(screening.getFinalSubmittedAt()).isNull();
+        assertThatIllegalStateException().isThrownBy(() -> screening.updateDraft(
+                "Changed", "Cast", "Drama", 90, "Hall",
+                Instant.parse("2027-02-01T10:00:00Z"),
+                Instant.parse("2027-02-01T12:00:00Z")));
+        assertThatIllegalStateException().isThrownBy(screening::submit);
+    }
+
+    @Test
     void reviewEnforcesInclusiveScoreRangeAndNonblankComments() {
         ScreeningEntity screening = new ScreeningEntity(
                 UUID.randomUUID(), validProgram(), user, null, null, null, null, null, null, null, Instant.EPOCH);

@@ -25,9 +25,9 @@ This is a backend contract only. JPA entities are never serialized. Every endpoi
 
 `Idempotency-Key` is required on every non-idempotent command: all command `POST` endpoints and command `PATCH` endpoints below. Its accepted syntax is 1-255 ASCII characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, `:`, `/`, `+`, `=`, and `-`. Never log the key or credentials.
 
-The idempotency identity is `(authenticated user ID, canonical operation, key)`. Canonical operation names are uppercase stable identifiers of at most 100 characters. `IdempotencyManager` hashes the operation plus canonical request content with SHA-256. The caller-provided canonical content must include route identifiers and the expected concurrency version where they affect the mutation; it never includes credentials.
+The idempotency identity is `(authenticated user ID, key)`. A user cannot reuse an unexpired key for another canonical operation: operation mismatch is `409 IDEMPOTENCY_KEY_REUSED`. Canonical operation names are uppercase stable identifiers of at most 100 characters and remain part of the stored record and SHA-256 request hash. The caller-provided canonical content must include route identifiers and the expected concurrency version where they affect the mutation; it never includes credentials.
 
-- Same identity and same hash after a successful commit: replay the original status and response body; do not execute again.
+- Same identity, operation, and hash after a successful commit: replay the original status and response body; do not execute again.
 - Same identity and different hash: `409 IDEMPOTENCY_KEY_REUSED`.
 - A concurrent in-progress duplicate is resolved deterministically; it may wait briefly for the first transaction or return `409 IDEMPOTENCY_REQUEST_IN_PROGRESS`, but must never double-execute.
 - Failed/rolled-back operations are not stored as successful replay results.
@@ -270,9 +270,9 @@ Audit atomically and return `204`. The transaction first resolves the active Scr
 
 ### POST `/api/v1/screenings/{screeningId}/submit`
 
-UC-S2 / FR-6. Owning `SUBMITTER`; `Idempotency-Key` and Screening `If-Match` required. Body is empty.
+UC-S2 / FR-6. Owning `SUBMITTER`; `Idempotency-Key` and Screening `If-Match` required. Body is empty; any supplied body is `400 UNEXPECTED_REQUEST_BODY`.
 
-Rate-limit, lock the Screening, and require active `CREATED`, Program `SUBMISSION`, and all complete film/candidate/time fields. Freeze editable details, set `SUBMITTED`, audit, commit, and return `200` with updated response/ETag.
+Apply the Screening-submission rate-limit group before controller/service execution. Authenticate and verify active ownership plus the Program-specific `SUBMITTER` role before idempotency processing. An exact completed replay returns the stored response. For a new request, select the active Screening `FOR UPDATE`, load its Program in the same transaction, and recheck ownership, role, optimistic version, Screening `CREATED`, and Program `SUBMISSION`. Require nonblank `filmTitle`, `cast`, `genre`, and `candidateAuditoriumName`; positive `durationMinutes`; both times; `endTime > startTime`; and an interval at least as long as the duration. Completeness failures return `400 SCREENING_SUBMISSION_INVALID` with per-field errors. Candidate overbooking is allowed and no final-auditorium conflict query runs. Atomically freeze regular draft editing by setting `SUBMITTED`, flush the version, write a safe old/new Screening audit, store the successful `200` idempotency result, and commit. `finalSubmittedAt` remains null. Persistence/audit/idempotency failure rolls back the transition and claim.
 
 ### POST `/api/v1/screenings/{screeningId}/handler`
 

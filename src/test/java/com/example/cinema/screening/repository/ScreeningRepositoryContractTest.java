@@ -15,7 +15,7 @@ import jakarta.persistence.LockModeType;
 class ScreeningRepositoryContractTest {
 
     @Test
-    void withdrawalLoadsOnlyAnActiveScreeningWithAPessimisticWriteLock() throws Exception {
+    void submissionAndWithdrawalLoadOnlyAnActiveScreeningWithAPessimisticWriteLock() throws Exception {
         Method method = ScreeningRepository.class.getMethod("findActiveByIdForUpdate", UUID.class);
 
         assertThat(method.getAnnotation(Lock.class).value()).isEqualTo(LockModeType.PESSIMISTIC_WRITE);

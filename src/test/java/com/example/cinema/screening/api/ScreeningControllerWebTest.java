@@ -19,6 +19,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -38,6 +39,8 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import com.example.cinema.common.api.EntityTagParser;
 import com.example.cinema.common.error.ApiProblemFactory;
+import com.example.cinema.common.error.ApiProblemFactory.FieldErrorDetail;
+import com.example.cinema.common.error.FieldValidationException;
 import com.example.cinema.common.error.ForbiddenException;
 import com.example.cinema.common.error.GlobalExceptionHandler;
 import com.example.cinema.common.error.IdempotencyConflictException;
@@ -53,6 +56,7 @@ import com.example.cinema.program.api.UserSummaryResponse;
 import com.example.cinema.screening.domain.ScreeningState;
 import com.example.cinema.screening.service.ScreeningCommandResult;
 import com.example.cinema.screening.service.ScreeningPreparationService;
+import com.example.cinema.screening.service.ScreeningSubmissionService;
 import com.example.cinema.user.authentication.CurrentUser;
 
 @WebMvcTest(controllers = ScreeningController.class)
@@ -73,6 +77,7 @@ class ScreeningControllerWebTest {
 
     @Autowired MockMvc mockMvc;
     @MockitoBean ScreeningPreparationService service;
+    @MockitoBean ScreeningSubmissionService submissionService;
     @MockitoBean InProcessRateLimiter rateLimiter;
     @MockitoBean CurrentUser currentUser;
     @MockitoBean ProblemResponseWriter problemResponseWriter;
@@ -265,6 +270,118 @@ class ScreeningControllerWebTest {
         assertWithdrawalError(409, "CONCURRENT_MODIFICATION");
     }
 
+    @Test
+    void submitsScreeningWithRequiredHeadersAndReturnsFrozenOwnerResponse() throws Exception {
+        when(submissionService.submit(SCREENING_ID, 2, "submit-key"))
+                .thenReturn(new ScreeningCommandResult<>(200, response(3, ScreeningState.SUBMITTED), false));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/submit", SCREENING_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\"")
+                        .header("Idempotency-Key", "submit-key"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.ETAG, "\"3\""))
+                .andExpect(jsonPath("$.screeningId").value(SCREENING_ID.toString()))
+                .andExpect(jsonPath("$.programId").value(PROGRAM_ID.toString()))
+                .andExpect(jsonPath("$.state").value("SUBMITTED"))
+                .andExpect(jsonPath("$.finalSubmittedAt").doesNotExist())
+                .andExpect(content().string(not(containsString("password"))))
+                .andExpect(content().string(not(containsString("hash-never-exposed"))));
+        verify(submissionService).submit(SCREENING_ID, 2, "submit-key");
+    }
+
+    @Test
+    void submissionRequiresIfMatchAndIdempotencyKeyAndRejectsABody() throws Exception {
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/submit", SCREENING_ID)
+                        .with(user("alice"))
+                        .header("Idempotency-Key", "key"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("MISSING_REQUIRED_HEADER"));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/submit", SCREENING_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\""))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("MISSING_REQUIRED_HEADER"));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/submit", SCREENING_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\"")
+                        .header("Idempotency-Key", "key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("UNEXPECTED_REQUEST_BODY"));
+        verify(submissionService, never()).submit(any(), any(Long.class), any());
+    }
+
+    @Test
+    void submissionReturnsFieldSpecificCompletenessErrors() throws Exception {
+        when(submissionService.submit(SCREENING_ID, 2, "incomplete"))
+                .thenThrow(new FieldValidationException(
+                        "SCREENING_SUBMISSION_INVALID",
+                        "The Screening is incomplete or invalid for submission.",
+                        List.of(
+                                new FieldErrorDetail("filmTitle", "must be nonblank for submission"),
+                                new FieldErrorDetail("endTime", "is required for submission"))));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/submit", SCREENING_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\"")
+                        .header("Idempotency-Key", "incomplete"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("SCREENING_SUBMISSION_INVALID"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("filmTitle"))
+                .andExpect(jsonPath("$.fieldErrors[1].field").value("endTime"))
+                .andExpect(content().string(not(containsString("SQL"))))
+                .andExpect(content().string(not(containsString("stackTrace"))));
+    }
+
+    @Test
+    void submissionMapsAuthorizationVisibilityStateConcurrencyAndIdempotencyErrorsSafely() throws Exception {
+        when(submissionService.submit(SCREENING_ID, 2, "forbidden")).thenThrow(new ForbiddenException());
+        assertSubmissionError("forbidden", 403, "FORBIDDEN");
+        when(submissionService.submit(SCREENING_ID, 2, "concealed")).thenThrow(new ResourceNotFoundException());
+        assertSubmissionError("concealed", 404, "RESOURCE_NOT_FOUND");
+        when(submissionService.submit(SCREENING_ID, 2, "state")).thenThrow(new InvalidStateException());
+        assertSubmissionError("state", 409, "INVALID_STATE");
+        when(submissionService.submit(SCREENING_ID, 2, "stale"))
+                .thenThrow(new OptimisticConcurrencyConflictException());
+        assertSubmissionError("stale", 409, "CONCURRENT_MODIFICATION");
+        when(submissionService.submit(SCREENING_ID, 2, "mismatch"))
+                .thenThrow(new IdempotencyConflictException(
+                        "IDEMPOTENCY_KEY_REUSED", "The key was reused.", false));
+        assertSubmissionError("mismatch", 409, "IDEMPOTENCY_KEY_REUSED");
+        when(submissionService.submit(SCREENING_ID, 2, "in-progress"))
+                .thenThrow(new IdempotencyConflictException(
+                        "IDEMPOTENCY_REQUEST_IN_PROGRESS", "The request is in progress.", true));
+        assertSubmissionError("in-progress", 409, "IDEMPOTENCY_REQUEST_IN_PROGRESS");
+    }
+
+    @Test
+    void submissionReplayReturnsStoredSuccessAndUnexpectedFailureIsControlled() throws Exception {
+        when(submissionService.submit(SCREENING_ID, 2, "replay"))
+                .thenReturn(new ScreeningCommandResult<>(200, response(3, ScreeningState.SUBMITTED), true));
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/submit", SCREENING_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\"")
+                        .header("Idempotency-Key", "replay"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("SUBMITTED"));
+
+        when(submissionService.submit(SCREENING_ID, 2, "failure"))
+                .thenThrow(new IllegalStateException("SQL repository screening failed"));
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/submit", SCREENING_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\"")
+                        .header("Idempotency-Key", "failure"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.errorCode").value("INTERNAL_ERROR"))
+                .andExpect(content().string(not(containsString("SQL"))))
+                .andExpect(content().string(not(containsString("repository"))))
+                .andExpect(content().string(not(containsString("stackTrace"))));
+    }
+
     private void assertCreateError(String key, int expectedStatus, String errorCode) throws Exception {
         mockMvc.perform(post("/api/v1/programs/{programId}/screenings", PROGRAM_ID)
                         .with(user("alice"))
@@ -297,7 +414,22 @@ class ScreeningControllerWebTest {
                 .andExpect(content().string(not(containsString("SQL"))));
     }
 
+    private void assertSubmissionError(String key, int expectedStatus, String errorCode) throws Exception {
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/submit", SCREENING_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\"")
+                        .header("Idempotency-Key", key))
+                .andExpect(status().is(expectedStatus))
+                .andExpect(jsonPath("$.errorCode").value(errorCode))
+                .andExpect(content().string(not(containsString("SQL"))))
+                .andExpect(content().string(not(containsString("stackTrace"))));
+    }
+
     private static ScreeningDetailResponse response(long version) {
+        return response(version, ScreeningState.CREATED);
+    }
+
+    private static ScreeningDetailResponse response(long version, ScreeningState state) {
         return new ScreeningDetailResponse(
                 SCREENING_ID,
                 PROGRAM_ID,
@@ -309,7 +441,7 @@ class ScreeningControllerWebTest {
                 null,
                 Instant.parse("2027-02-01T10:00:00Z"),
                 Instant.parse("2027-02-01T12:00:00Z"),
-                ScreeningState.CREATED,
+                state,
                 null,
                 null,
                 null,

@@ -19,8 +19,8 @@ import jakarta.persistence.UniqueConstraint;
 
 @Entity
 @Table(name = "idempotency_record", uniqueConstraints = @UniqueConstraint(
-        name = "uk_idempotency_user_operation_key",
-        columnNames = {"user_id", "operation", "idempotency_key"}))
+        name = "uk_idempotency_user_key",
+        columnNames = {"user_id", "idempotency_key"}))
 public class IdempotencyRecordEntity {
 
     @Id
@@ -90,6 +90,10 @@ public class IdempotencyRecordEntity {
 
     public boolean hasRequestHash(byte[] candidate) {
         return Arrays.equals(requestHash, candidate);
+    }
+
+    public boolean belongsToOperation(String candidate) {
+        return operation.equals(candidate);
     }
 
     public UUID getId() { return id; }

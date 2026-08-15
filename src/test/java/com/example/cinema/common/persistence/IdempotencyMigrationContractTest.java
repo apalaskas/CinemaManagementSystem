@@ -31,4 +31,22 @@ class IdempotencyMigrationContractTest {
                 .contains("ENGINE = InnoDB")
                 .contains("COLLATE = utf8mb4_0900_ai_ci");
     }
+
+    @Test
+    void v3MakesAKeyUniquePerUserAcrossOperations() throws IOException {
+        String migration;
+        try (InputStream input = getClass().getResourceAsStream(
+                "/db/migration/V3__scope_idempotency_keys_per_user.sql")) {
+            if (input == null) {
+                throw new AssertionError("V3 idempotency migration is missing");
+            }
+            migration = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+
+        assertThat(migration)
+                .contains("DELETE older")
+                .contains("newer.created_at > older.created_at")
+                .contains("DROP INDEX uk_idempotency_user_operation_key")
+                .contains("uk_idempotency_user_key UNIQUE (user_id, idempotency_key)");
+    }
 }

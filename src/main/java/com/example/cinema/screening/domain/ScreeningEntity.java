@@ -256,6 +256,13 @@ public class ScreeningEntity {
         deletedAt = requireNonNull(withdrawnAt, "withdrawnAt");
     }
 
+    public void submit() {
+        if (deletedAt != null || state != ScreeningState.CREATED) {
+            throw new IllegalStateException("Only an active CREATED Screening may be submitted");
+        }
+        state = ScreeningState.SUBMITTED;
+    }
+
     public void rejectForMissingFinalSubmission(String reason) {
         if (state != ScreeningState.APPROVED || finalSubmittedAt != null) {
             throw new IllegalStateException(

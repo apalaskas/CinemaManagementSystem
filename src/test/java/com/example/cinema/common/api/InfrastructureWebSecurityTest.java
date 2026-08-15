@@ -71,6 +71,7 @@ import com.example.cinema.search.visibility.SearchAndVisibilityService;
 import com.example.cinema.common.api.PageResponse;
 import com.example.cinema.screening.api.ScreeningController;
 import com.example.cinema.screening.service.ScreeningPreparationService;
+import com.example.cinema.screening.service.ScreeningSubmissionService;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -108,6 +109,7 @@ class InfrastructureWebSecurityTest {
     @MockitoBean ProgramLifecycleService programLifecycleService;
     @MockitoBean SearchAndVisibilityService searchAndVisibilityService;
     @MockitoBean ScreeningPreparationService screeningPreparationService;
+    @MockitoBean ScreeningSubmissionService screeningSubmissionService;
 
     @BeforeEach
     void user() {
@@ -163,6 +165,13 @@ class InfrastructureWebSecurityTest {
                         .header("Idempotency-Key", "screening-key")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/submit",
+                        "dddddddd-dddd-dddd-dddd-dddddddddddd")
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", "submit-key"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
     }

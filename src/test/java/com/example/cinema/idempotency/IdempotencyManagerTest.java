@@ -50,7 +50,7 @@ class IdempotencyManagerTest {
         Map<String, Object> request = Map.of("name", "Festival");
         IdempotencyRecordEntity record = record(hasher.hash("PROGRAM.CREATE", request));
         record.complete(201, "{\"id\":\"one\"}");
-        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.of(record));
+        when(repository.findForUpdate(userId, "key-1")).thenReturn(Optional.of(record));
         AtomicBoolean invoked = new AtomicBoolean();
 
         IdempotencyResult result = manager.execute("PROGRAM.CREATE", "key-1", request, () -> {
@@ -65,7 +65,7 @@ class IdempotencyManagerTest {
     @Test
     void storesOnlyTheSuccessfulResponseAfterExecutingANewCommand() {
         Map<String, Object> request = Map.of("name", "Festival");
-        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.empty());
+        when(repository.findForUpdate(userId, "key-1")).thenReturn(Optional.empty());
         when(repository.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
         IdempotencyResult result = manager.execute("PROGRAM.CREATE", "key-1", request,
@@ -83,7 +83,7 @@ class IdempotencyManagerTest {
     @Test
     void rejectsSameKeyWithDifferentCanonicalPayload() {
         IdempotencyRecordEntity record = record(hasher.hash("PROGRAM.CREATE", Map.of("name", "First")));
-        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.of(record));
+        when(repository.findForUpdate(userId, "key-1")).thenReturn(Optional.of(record));
 
         assertThatThrownBy(() -> manager.execute("PROGRAM.CREATE", "key-1", Map.of("name", "Second"),
                 () -> new StoredCommandResponse(201, "{}")))
@@ -95,7 +95,7 @@ class IdempotencyManagerTest {
     @Test
     void rejectsUnexpiredInProgressRecordAsRetryable() {
         Map<String, Object> request = Map.of("name", "Festival");
-        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1"))
+        when(repository.findForUpdate(userId, "key-1"))
                 .thenReturn(Optional.of(record(hasher.hash("PROGRAM.CREATE", request))));
 
         assertThatThrownBy(() -> manager.execute("PROGRAM.CREATE", "key-1", request,
@@ -108,7 +108,7 @@ class IdempotencyManagerTest {
 
     @Test
     void commandFailureDoesNotStoreACompletedResult() {
-        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.empty());
+        when(repository.findForUpdate(userId, "key-1")).thenReturn(Optional.empty());
         when(repository.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
         assertThatThrownBy(() -> manager.execute("PROGRAM.CREATE", "key-1", Map.of("name", "Festival"),
@@ -123,7 +123,7 @@ class IdempotencyManagerTest {
                 UUID.randomUUID(), userId, "PROGRAM.CREATE", "key-1",
                 hasher.hash("PROGRAM.CREATE", Map.of("name", "Old")),
                 now.minus(Duration.ofHours(25)), now);
-        when(repository.findForUpdate(userId, "PROGRAM.CREATE", "key-1")).thenReturn(Optional.of(expired));
+        when(repository.findForUpdate(userId, "key-1")).thenReturn(Optional.of(expired));
         when(repository.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
         IdempotencyResult result = manager.execute("PROGRAM.CREATE", "key-1", Map.of("name", "New"),
@@ -142,6 +142,45 @@ class IdempotencyManagerTest {
                 .extracting(error -> ((InvalidInputException) error).errorCode())
                 .isEqualTo("INVALID_IDEMPOTENCY_KEY");
         verify(repository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void rejectsReuseOfAUserKeyByAnotherOperation() {
+        Map<String, Object> original = Map.of("name", "Festival");
+        IdempotencyRecordEntity record = record(hasher.hash("PROGRAM.CREATE", original));
+        when(repository.findForUpdate(userId, "key-1")).thenReturn(Optional.of(record));
+        AtomicBoolean invoked = new AtomicBoolean();
+
+        assertThatThrownBy(() -> manager.execute(
+                "SCREENING.SUBMIT",
+                "key-1",
+                Map.of("screeningId", UUID.randomUUID()),
+                () -> {
+                    invoked.set(true);
+                    return new StoredCommandResponse(200, "{}");
+                }))
+                .isInstanceOfSatisfying(ConflictException.class,
+                        error -> assertThat(error.errorCode()).isEqualTo("IDEMPOTENCY_KEY_REUSED"));
+        assertThat(invoked).isFalse();
+    }
+
+    @Test
+    void retryAfterRolledBackCommandFailureCanClaimAndCompleteTheKey() {
+        when(repository.findForUpdate(userId, "key-1")).thenReturn(Optional.empty());
+        when(repository.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        Map<String, Object> request = Map.of("screeningId", UUID.randomUUID());
+
+        assertThatThrownBy(() -> manager.execute(
+                "SCREENING.SUBMIT", "key-1", request,
+                () -> { throw new IllegalStateException("simulated rollback"); }))
+                .isInstanceOf(IllegalStateException.class);
+
+        IdempotencyResult retry = manager.execute(
+                "SCREENING.SUBMIT", "key-1", request,
+                () -> new StoredCommandResponse(200, "{\"state\":\"SUBMITTED\"}"));
+
+        assertThat(retry).isEqualTo(new IdempotencyResult(
+                200, "{\"state\":\"SUBMITTED\"}", false));
     }
 
     @Test

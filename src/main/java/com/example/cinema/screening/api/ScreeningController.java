@@ -16,8 +16,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.cinema.common.api.EntityTagParser;
+import com.example.cinema.common.error.InvalidInputException;
 import com.example.cinema.screening.service.ScreeningCommandResult;
 import com.example.cinema.screening.service.ScreeningPreparationService;
+import com.example.cinema.screening.service.ScreeningSubmissionService;
 
 import jakarta.validation.Valid;
 
@@ -26,10 +28,15 @@ import jakarta.validation.Valid;
 public class ScreeningController {
 
     private final ScreeningPreparationService service;
+    private final ScreeningSubmissionService submissionService;
     private final EntityTagParser entityTagParser;
 
-    public ScreeningController(ScreeningPreparationService service, EntityTagParser entityTagParser) {
+    public ScreeningController(
+            ScreeningPreparationService service,
+            ScreeningSubmissionService submissionService,
+            EntityTagParser entityTagParser) {
         this.service = service;
+        this.submissionService = submissionService;
         this.entityTagParser = entityTagParser;
     }
 
@@ -68,5 +75,24 @@ public class ScreeningController {
             @RequestHeader(HttpHeaders.IF_MATCH) String ifMatch) {
         service.withdraw(screeningId, entityTagParser.parseVersion(ifMatch));
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/screenings/{screeningId}/submit")
+    public ResponseEntity<ScreeningDetailResponse> submit(
+            @PathVariable UUID screeningId,
+            @RequestHeader(HttpHeaders.IF_MATCH) String ifMatch,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody(required = false) byte[] requestBody) {
+        if (requestBody != null && requestBody.length > 0) {
+            throw new InvalidInputException(
+                    "UNEXPECTED_REQUEST_BODY", "Screening submission does not accept a request body.");
+        }
+        ScreeningCommandResult<ScreeningDetailResponse> result = submissionService.submit(
+                screeningId,
+                entityTagParser.parseVersion(ifMatch),
+                idempotencyKey);
+        return ResponseEntity.status(result.status())
+                .eTag(entityTagParser.format(result.body().version()))
+                .body(result.body());
     }
 }

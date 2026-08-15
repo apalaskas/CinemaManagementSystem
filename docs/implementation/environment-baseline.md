@@ -46,7 +46,7 @@ On Windows only, `mvnw.cmd` detects a non-ASCII workspace path and temporarily m
 
 The default test lifecycle remains database-independent. The `mysql-it` Maven profile reserves `*MySqlIT` for explicit real-MySQL verification through Failsafe; no such test is executed unless that profile is selected and a separately installed MySQL test schema is configured. Activating the profile requires the separate `MYSQL_TEST_DB_URL`, `MYSQL_TEST_DB_USERNAME`, and `MYSQL_TEST_DB_PASSWORD` environment variables and passes them to tests as the standard application database properties, preventing accidental fallback to the development schema. The application configuration reads `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD`, uses `cinema_management` only as the default local schema name, and contains no committed credentials.
 
-Flyway migration `V1__create_domain_schema.sql` creates the six conceptual relations only. Flyway migration `V2__create_idempotency_record.sql` adds the `idempotency_record` infrastructure table; Flyway schema history remains framework-owned infrastructure. The domain JPA model and repositories remain persistence scaffolding, not an implementation of the business use cases or REST endpoints.
+Flyway migration `V1__create_domain_schema.sql` creates the six conceptual relations only. Flyway migration `V2__create_idempotency_record.sql` adds the `idempotency_record` infrastructure table, and V3 tightens its uniqueness to one unexpired key per authenticated user across operations; Flyway schema history remains framework-owned infrastructure. The domain JPA model and repositories remain persistence scaffolding, not an implementation of the business use cases or REST endpoints.
 
 ## Implemented shared infrastructure (Prompt 2)
 
@@ -90,7 +90,7 @@ Application and JDBC configuration must normalize timestamps to UTC. Local devel
 - Program name uniqueness is case-insensitive and is guaranteed by the database collation plus a unique constraint. A pre-insert query may improve the message but is not the integrity mechanism.
 - Candidate-auditorium overbooking is allowed. Conflict checks occur only against active `SCHEDULED` screenings using the final auditorium and final interval.
 
-The technical `idempotency_record` uniquely identifies `(authenticated user, operation, Idempotency-Key)`, retains a SHA-256 request hash and the original successful HTTP status/body, and supports atomic claim/replay behavior. V2 stores UUIDs as `BINARY(16)`, the hash as `BINARY(32)`, case-sensitive ASCII operation/key values, constrained `IN_PROGRESS`/`COMPLETED` status, and indexed expiry. Never store credentials or unredacted security-sensitive data in it.
+The technical `idempotency_record` uniquely identifies `(authenticated user, Idempotency-Key)` after V3, retains the canonical operation, SHA-256 request hash, and original successful HTTP status/body, and supports atomic claim/replay behavior. Cross-operation reuse by the same user is rejected. V2 stores UUIDs as `BINARY(16)`, the hash as `BINARY(32)`, case-sensitive ASCII operation/key values, constrained `IN_PROGRESS`/`COMPLETED` status, and indexed expiry; V3 deterministically retains the newest pre-existing row for each user/key before replacing the original operation-scoped unique key with the user-scoped key. Never store credentials or unredacted security-sensitive data in it.
 
 ## Expected dependency direction
 
