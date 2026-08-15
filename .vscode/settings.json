@@ -1,0 +1,9 @@
+{
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.compile.nullAnalysis.mode": "automatic",
+  "maven.executable.preferMavenWrapper": true,
+  "spring-boot.ls.problem.application-properties.UNKNOWN_PROPERTY": "WARNING",
+  "files.exclude": {
+    "**/target": true
+  }
+}

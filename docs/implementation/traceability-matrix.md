@@ -3,6 +3,8 @@
 Initial baseline status: **PLANNED**  
 This matrix is planning evidence only. No business feature existed when it was created.
 
+Prompt 1 added the build, configuration, Flyway, JPA entity, repository, and database-independent domain-test foundation. All numbered requirements and use cases remain `PLANNED`: no business service, controller, authorization policy, idempotency workflow, or public API behavior has been implemented yet.
+
 ## Status rules
 
 - `PLANNED`: mapped but no implementation claim.
@@ -55,3 +57,14 @@ Exact package/class names may follow the eventual code structure, but maintain t
 - `*MySqlIT`: opt-in `mysql-it` profile tests against the separately installed local MySQL test schema.
 
 Do not add H2, Testcontainers, or container-based fixtures to satisfy any row.
+
+## Persistence-foundation evidence
+
+| Foundation item | Implemented evidence | Verification | Status |
+|---|---|---|---|
+| Build/toolchain | `pom.xml`; Maven 3.9.16 wrapper; JDK/Maven Enforcer rules; Spring Boot 4.1.0 BOM and required dependencies | `mvnw test`; `mvnw -DskipTests package` | VERIFIED |
+| Runtime configuration | `application.yml`; typed `CinemaProperties`; UTC `Clock`; local example; VS Code recommendations/settings/launch configuration | `CinemaPropertiesTest`; `TimeConfigurationTest` | VERIFIED |
+| Six-relation physical schema | `database/create_database.sql`; `V1__create_domain_schema.sql` with InnoDB, `utf8mb4_0900_ai_ci`, constraints, foreign keys, and indexes | Source/schema review; real MySQL migration remains for the opt-in profile | IMPLEMENTED |
+| JPA domain mapping | `UserEntity`, `ProgramEntity`, `ProgramRoleEntity`/`ProgramRoleId`, `ScreeningEntity`, `ReviewEntity`, `AuditLogEntity`; canonical enums; UUID binary mapping; Program/Screening versions | 16 database-independent tests covering states, identity, conversion, invariants, configuration, and UTC clock | VERIFIED |
+| Repository foundation | Six aggregate/table repositories, including row-locking, role, active-screening, review-uniqueness, and half-open scheduling-conflict query methods | Compilation under `--release 26`; query/database behavior awaits `mysql-it` | IMPLEMENTED |
+| Deferred infrastructure | `idempotency` package boundary only; no `idempotency_record` table or behavior before Prompt 2 | Schema and dependency inspection | PLANNED |

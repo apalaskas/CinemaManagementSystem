@@ -38,6 +38,16 @@ The eventual build must maintain two deliberately different test paths:
 
 The opt-in profile should bind integration tests separately from the fast default suite and fail clearly when its explicitly required test database configuration is absent. Tests must create fixture data transactionally or through migrations and clean it without dropping an uncontrolled schema.
 
+## Implemented foundation (Prompt 1)
+
+The initial build and persistence foundation uses the canonical identity `com.example:cinema-management-system`, with base package `com.example.cinema`; no earlier Java package identity existed to preserve. The Maven build now enforces JDK 26 and Maven 3.9.16, compiles with `--release 26`, and uses Spring Boot 4.1.0 dependency management. The committed wrapper is Maven 3.9.16.
+
+On Windows only, `mvnw.cmd` detects a non-ASCII workspace path and temporarily maps that workspace to an unused drive letter for the Maven process, then removes the mapping. This works around path corruption observed in the JDK/Maven launcher while leaving project files in place; ASCII workspace paths and the Unix wrapper retain normal wrapper behavior.
+
+The default test lifecycle remains database-independent. The `mysql-it` Maven profile reserves `*MySqlIT` for explicit real-MySQL verification through Failsafe; no such test is executed unless that profile is selected and a separately installed MySQL test schema is configured. The application configuration reads `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD`, uses `cinema_management` only as the default local schema name, and contains no committed credentials.
+
+Flyway migration `V1__create_domain_schema.sql` creates the six conceptual relations only. The `idempotency_record` infrastructure table is deliberately deferred to the idempotency implementation task; Flyway schema history remains framework-owned infrastructure. The initial JPA model and repositories are persistence scaffolding, not an implementation of the business use cases or REST endpoints.
+
 ## Persistence baseline
 
 Flyway owns schema creation and evolution. Configure:
@@ -55,7 +65,9 @@ Application and JDBC configuration must normalize timestamps to UTC. Local devel
 - Character set: **utf8mb4**.
 - Collation: **utf8mb4_0900_ai_ci**.
 - Persist UUIDs as `BINARY(16)`; expose canonical lowercase-hyphenated UUID strings through REST DTOs.
+- The JPA representation is `java.util.UUID` with an explicit binary JDBC mapping. `BINARY(16)` is used because it preserves the full 128-bit value in a compact, fixed-width, index-friendly representation; boundary DTOs must perform canonical string conversion.
 - Store timestamps in UTC and normalize all timestamp request/response values to UTC. API timestamps use ISO 8601 with an offset; responses use `Z`.
+- Creation, audit, deletion, final-submission, and Screening interval timestamps are represented as `Instant` in Java and as UTC-normalized `DATETIME(6)` in MySQL. MySQL `DATETIME` carries no zone, so the JDBC/Hibernate UTC setting and request/response normalization are mandatory parts of the mapping.
 - Map conceptual `USER` to physical `cms_user` to avoid problematic SQL naming.
 - Preserve six conceptual/domain relations: `cms_user`, `program`, `program_role`, `screening`, `review`, and `audit_log`.
 - Add `idempotency_record` as a technical infrastructure table for the idempotency component and NFR-2.3. It is not a seventh conceptual domain entity. Flyway's schema-history table is infrastructure as well.

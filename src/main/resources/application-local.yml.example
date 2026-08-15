@@ -1,0 +1,10 @@
+# Copy this file to application-local.yml and activate the "local" profile.
+# Supply real values through environment variables; do not commit them.
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/cinema_management?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}

@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "java",
+      "name": "Run Cinema Management System",
+      "request": "launch",
+      "mainClass": "com.example.cinema.CinemaManagementSystemApplication",
+      "projectName": "cinema-management-system",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

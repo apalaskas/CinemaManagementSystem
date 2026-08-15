@@ -1,0 +1,43 @@
+spring:
+  application:
+    name: cinema-management-system
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/cinema_management?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true}
+    username: ${DB_USERNAME:}
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+        type:
+          preferred_uuid_jdbc_type: BINARY
+  jackson:
+    time-zone: UTC
+
+logging:
+  level:
+    org.hibernate.orm.jdbc.bind: "OFF"
+    org.hibernate.orm.jdbc.extract: "OFF"
+
+cinema:
+  pagination:
+    default-size: 20
+    max-size: 100
+  rate-limit:
+    screening-submission:
+      capacity: 10
+      refill-period: 1m
+    program-search:
+      capacity: 120
+      refill-period: 1m
+    screening-search:
+      capacity: 120
+      refill-period: 1m
