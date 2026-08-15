@@ -69,12 +69,14 @@ import com.example.cinema.program.service.ProgramLifecycleService;
 import com.example.cinema.program.service.ProgramManagementService;
 import com.example.cinema.search.visibility.SearchAndVisibilityService;
 import com.example.cinema.common.api.PageResponse;
+import com.example.cinema.screening.api.ScreeningController;
+import com.example.cinema.screening.service.ScreeningPreparationService;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 
-@WebMvcTest(controllers = {InfrastructureTestController.class, ProgramController.class})
+@WebMvcTest(controllers = {InfrastructureTestController.class, ProgramController.class, ScreeningController.class})
 @ImportAutoConfiguration({
         SecurityAutoConfiguration.class,
         ServletWebSecurityAutoConfiguration.class,
@@ -105,6 +107,7 @@ class InfrastructureWebSecurityTest {
     @MockitoBean ProgramManagementService programManagementService;
     @MockitoBean ProgramLifecycleService programLifecycleService;
     @MockitoBean SearchAndVisibilityService searchAndVisibilityService;
+    @MockitoBean ScreeningPreparationService screeningPreparationService;
 
     @BeforeEach
     void user() {
@@ -152,6 +155,14 @@ class InfrastructureWebSecurityTest {
                         .header("Idempotency-Key", "transition-key")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"targetState\":\"SUBMISSION\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
+
+        mockMvc.perform(post("/api/v1/programs/{programId}/screenings",
+                        "cccccccc-cccc-cccc-cccc-cccccccccccc")
+                        .header("Idempotency-Key", "screening-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
     }

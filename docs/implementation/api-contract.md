@@ -126,12 +126,12 @@ Public callers receive only `ANNOUNCED` Programs: ID, name, description, dates, 
 - `cast`: text, nonblank when supplied; required at submission.
 - `genre`: nonblank when supplied; required at submission.
 - `durationMinutes`: positive integer when supplied; required at submission.
-- `candidateAuditorium`: nonblank when supplied; required at submission and only a preference.
+- `candidateAuditoriumName`: nonblank when supplied; required at submission and only a preference.
 - `startTime`, `endTime`: explicit timestamps. When both and duration are present, require `endTime > startTime` and elapsed minutes at least `durationMinutes`. Both are required at submission.
 
 Partial draft updates never replace an explicitly supplied end time with a calculated value. `finalAuditorium` is separate and is set only by scheduling.
 
-`ScreeningDetailResponse` contains allowlisted fields from: `screeningId`, `programId`, film fields, candidate/final auditorium, start/end times, state, conditional notes, final-submission timestamp, rejection reason, review, handler/submitter display information, `createdAt`, and `version`.
+`ScreeningDetailResponse` contains the allowlisted owner fields `screeningId`, `programId`, `filmTitle`, `cast`, `genre`, `durationMinutes`, `candidateAuditoriumName`, `finalAuditoriumName`, `startTime`, `endTime`, `state`, `conditionalNotes`, `finalSubmittedAt`, `rejectionReason`, submitter/handler summaries, `createdAt`, and `version`. Review data will be added to the appropriate role-aware response when UC-S3/UC-S5 implements Review reads; a CREATED draft has no Review.
 
 Visibility:
 
@@ -241,9 +241,23 @@ UC-S1 / FR-5. Authenticated user; `Idempotency-Key` required.
 
 Body may contain any subset of the Screening draft fields. Link to an existing Program and validate every supplied value. The requester must not be a PROGRAMMER or STAFF in that Program. Atomically create an active `CREATED` draft and create/verify the requester's `SUBMITTER` Program role. Candidate overbooking is allowed. Return `201`, `Location`, Screening `ETag`, and owner `ScreeningDetailResponse`.
 
+```json
+{
+  "filmTitle": "A Film",
+  "cast": "Lead One, Lead Two",
+  "genre": "Drama",
+  "durationMinutes": 120,
+  "candidateAuditoriumName": "Auditorium A",
+  "startTime": "2027-04-10T17:00:00Z",
+  "endTime": "2027-04-10T19:00:00Z"
+}
+```
+
+Every field is optional for a draft. Supplied strings are trimmed and nonblank, supplied duration is positive, both supplied times require `endTime > startTime`, and when both times plus duration are present the interval must cover the duration. Creation is available only while the Program is `CREATED` or `SUBMISSION`. The Program row is locked while phase and mutually exclusive role checks plus optional `SUBMITTER` assignment are performed.
+
 ### PATCH `/api/v1/screenings/{screeningId}`
 
-UC-S1 / FR-5. Owning `SUBMITTER`; `Idempotency-Key` and Screening `If-Match` required. Allowed only for active `CREATED` drafts. Body contains at least one draft field; null is not an implicit clear unless a future field-specific contract explicitly permits it. Validate resulting supplied combinations and return `200` plus updated ETag.
+UC-S1 / FR-5. Owning `SUBMITTER`; `Idempotency-Key` and Screening `If-Match` required. Allowed only for active `CREATED` drafts while the Program is `CREATED` or `SUBMISSION`. Body contains at least one draft field; null is not an implicit clear unless a future field-specific contract explicitly permits it. Only the seven creation fields above are editable; internal identity, ownership, workflow, handler, final scheduling, review, audit timestamp, deletion, and version fields are rejected at deserialization. Validate the complete resulting draft and return `200` plus updated ETag.
 
 ### DELETE `/api/v1/screenings/{screeningId}`
 
@@ -252,7 +266,7 @@ UC-S1 / FR-6.3. Owning `SUBMITTER`; Screening `If-Match` required. Soft-delete w
 - Screening is `CREATED`; or
 - Screening is `SUBMITTED` and Program is still `SUBMISSION`.
 
-Audit atomically and return `204`. After Program enters `ASSIGNMENT`, withdrawal is `409`.
+Audit atomically and return `204`. The Screening is selected as an active row with a pessimistic write lock and still uses its optimistic version. After Program enters `ASSIGNMENT`, withdrawal is `409`; a repeated withdrawal receives the same generic safe `404` as another unavailable Screening and does not add another audit record.
 
 ### POST `/api/v1/screenings/{screeningId}/submit`
 

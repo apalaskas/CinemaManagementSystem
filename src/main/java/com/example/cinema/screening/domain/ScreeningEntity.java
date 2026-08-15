@@ -219,6 +219,43 @@ public class ScreeningEntity {
         return version;
     }
 
+    public void updateDraft(
+            String filmTitle,
+            String castText,
+            String genre,
+            Integer durationMinutes,
+            String candidateAuditoriumName,
+            Instant startTime,
+            Instant endTime) {
+        if (deletedAt != null || state != ScreeningState.CREATED) {
+            throw new IllegalStateException("Only an active CREATED Screening may be edited");
+        }
+        String normalizedFilmTitle = normalizeOptionalText(filmTitle, "filmTitle");
+        String normalizedCastText = normalizeOptionalText(castText, "castText");
+        String normalizedGenre = normalizeOptionalText(genre, "genre");
+        Integer validatedDuration = validateDuration(durationMinutes);
+        String normalizedCandidate = normalizeOptionalText(
+                candidateAuditoriumName, "candidateAuditoriumName");
+        validateInterval(startTime, endTime, validatedDuration);
+        this.filmTitle = normalizedFilmTitle;
+        this.castText = normalizedCastText;
+        this.genre = normalizedGenre;
+        this.durationMinutes = validatedDuration;
+        this.candidateAuditoriumName = normalizedCandidate;
+        this.startTime = startTime;
+        this.endTime = endTime;
+    }
+
+    public void withdraw(Instant withdrawnAt) {
+        if (deletedAt != null) {
+            throw new IllegalStateException("An inactive Screening cannot be withdrawn again");
+        }
+        if (state != ScreeningState.CREATED && state != ScreeningState.SUBMITTED) {
+            throw new IllegalStateException("Only CREATED or SUBMITTED Screenings may be withdrawn");
+        }
+        deletedAt = requireNonNull(withdrawnAt, "withdrawnAt");
+    }
+
     public void rejectForMissingFinalSubmission(String reason) {
         if (state != ScreeningState.APPROVED || finalSubmittedAt != null) {
             throw new IllegalStateException(

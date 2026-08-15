@@ -69,6 +69,28 @@ class EntityInvariantTest {
     }
 
     @Test
+    void screeningDraftUpdateRevalidatesAndWithdrawalIsOneWay() {
+        ScreeningEntity screening = new ScreeningEntity(
+                UUID.randomUUID(), validProgram(), user, "Film", null, null, 90,
+                null, Instant.parse("2027-02-01T10:00:00Z"),
+                Instant.parse("2027-02-01T12:00:00Z"), Instant.EPOCH);
+
+        screening.updateDraft(
+                " Revised Film ", " Cast ", " Drama ", 100, " Hall ",
+                Instant.parse("2027-02-01T10:00:00Z"),
+                Instant.parse("2027-02-01T12:00:00Z"));
+        assertThat(screening.getFilmTitle()).isEqualTo("Revised Film");
+        assertThat(screening.getCandidateAuditoriumName()).isEqualTo("Hall");
+
+        Instant withdrawnAt = Instant.parse("2027-01-02T00:00:00Z");
+        screening.withdraw(withdrawnAt);
+        assertThat(screening.getDeletedAt()).isEqualTo(withdrawnAt);
+        assertThatIllegalStateException().isThrownBy(() -> screening.withdraw(withdrawnAt));
+        assertThatIllegalStateException().isThrownBy(() -> screening.updateDraft(
+                "Again", "Cast", "Drama", 100, "Hall", null, null));
+    }
+
+    @Test
     void reviewEnforcesInclusiveScoreRangeAndNonblankComments() {
         ScreeningEntity screening = new ScreeningEntity(
                 UUID.randomUUID(), validProgram(), user, null, null, null, null, null, null, null, Instant.EPOCH);
