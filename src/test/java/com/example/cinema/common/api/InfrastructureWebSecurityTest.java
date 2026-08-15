@@ -75,6 +75,7 @@ import com.example.cinema.screening.api.ScreeningController;
 import com.example.cinema.screening.service.ScreeningPreparationService;
 import com.example.cinema.screening.service.ScreeningSubmissionService;
 import com.example.cinema.screening.service.ScreeningAssignmentReviewService;
+import com.example.cinema.screening.service.ScreeningFinalizationService;
 
 import jakarta.servlet.Filter;
 import jakarta.validation.Valid;
@@ -116,6 +117,7 @@ class InfrastructureWebSecurityTest {
     @MockitoBean ScreeningPreparationService screeningPreparationService;
     @MockitoBean ScreeningSubmissionService screeningSubmissionService;
     @MockitoBean ScreeningAssignmentReviewService screeningAssignmentReviewService;
+    @MockitoBean ScreeningFinalizationService screeningFinalizationService;
 
     @BeforeEach
     void user() {
@@ -196,6 +198,37 @@ class InfrastructureWebSecurityTest {
                         .header("Idempotency-Key", "review-key")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"numericScore\":8.5,\"detailedComments\":\"Good\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/decision",
+                        "dddddddd-dddd-dddd-dddd-dddddddddddd")
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", "decision-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"decision\":\"APPROVE\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/final-submission",
+                        "dddddddd-dddd-dddd-dddd-dddddddddddd")
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", "final-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/schedule",
+                        "dddddddd-dddd-dddd-dddd-dddddddddddd")
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", "schedule-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"finalAuditoriumName":"Hall",
+                                 "startTime":"2027-06-01T10:00:00Z",
+                                 "endTime":"2027-06-01T12:00:00Z"}
+                                """))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"));
     }

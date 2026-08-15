@@ -57,6 +57,7 @@ import com.example.cinema.program.api.UserSummaryResponse;
 import com.example.cinema.screening.domain.ScreeningState;
 import com.example.cinema.screening.service.ScreeningCommandResult;
 import com.example.cinema.screening.service.ScreeningAssignmentReviewService;
+import com.example.cinema.screening.service.ScreeningFinalizationService;
 import com.example.cinema.screening.service.ScreeningPreparationService;
 import com.example.cinema.screening.service.ScreeningSubmissionService;
 import com.example.cinema.user.authentication.CurrentUser;
@@ -81,6 +82,7 @@ class ScreeningControllerWebTest {
     @MockitoBean ScreeningPreparationService service;
     @MockitoBean ScreeningSubmissionService submissionService;
     @MockitoBean ScreeningAssignmentReviewService assignmentReviewService;
+    @MockitoBean ScreeningFinalizationService finalizationService;
     @MockitoBean InProcessRateLimiter rateLimiter;
     @MockitoBean CurrentUser currentUser;
     @MockitoBean ProblemResponseWriter problemResponseWriter;

@@ -99,10 +99,14 @@ class JpaMappingContractTest {
 
         String query = method.getAnnotation(Query.class).value();
         assertThat(query)
+                .contains("s.state = com.example.cinema.screening.domain.ScreeningState.SCHEDULED")
+                .contains("s.deletedAt is null")
                 .contains("s.finalAuditoriumName = :finalAuditoriumName")
+                .contains("s.id <> :excludedScreeningId")
                 .contains("s.startTime < :requestedEnd")
                 .contains("s.endTime > :requestedStart")
-                .doesNotContain("lower(");
+                .doesNotContain("lower(")
+                .doesNotContain("s.program.id");
         assertThat(method.getAnnotation(Lock.class).value()).isEqualTo(LockModeType.PESSIMISTIC_WRITE);
     }
 

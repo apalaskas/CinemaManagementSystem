@@ -19,6 +19,7 @@ import com.example.cinema.common.api.EntityTagParser;
 import com.example.cinema.common.error.InvalidInputException;
 import com.example.cinema.screening.service.ScreeningCommandResult;
 import com.example.cinema.screening.service.ScreeningAssignmentReviewService;
+import com.example.cinema.screening.service.ScreeningFinalizationService;
 import com.example.cinema.screening.service.ScreeningPreparationService;
 import com.example.cinema.screening.service.ScreeningSubmissionService;
 
@@ -31,16 +32,19 @@ public class ScreeningController {
     private final ScreeningPreparationService service;
     private final ScreeningSubmissionService submissionService;
     private final ScreeningAssignmentReviewService assignmentReviewService;
+    private final ScreeningFinalizationService finalizationService;
     private final EntityTagParser entityTagParser;
 
     public ScreeningController(
             ScreeningPreparationService service,
             ScreeningSubmissionService submissionService,
             ScreeningAssignmentReviewService assignmentReviewService,
+            ScreeningFinalizationService finalizationService,
             EntityTagParser entityTagParser) {
         this.service = service;
         this.submissionService = submissionService;
         this.assignmentReviewService = assignmentReviewService;
+        this.finalizationService = finalizationService;
         this.entityTagParser = entityTagParser;
     }
 
@@ -130,6 +134,54 @@ public class ScreeningController {
                 idempotencyKey);
         return ResponseEntity.status(result.status())
                 .eTag(entityTagParser.format(result.body().screeningVersion()))
+                .body(result.body());
+    }
+
+    @PostMapping(path = "/screenings/{screeningId}/decision", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<ScreeningDecisionResponse> decide(
+            @PathVariable UUID screeningId,
+            @RequestHeader(HttpHeaders.IF_MATCH) String ifMatch,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody ScreeningDecisionRequest request) {
+        ScreeningCommandResult<ScreeningDecisionResponse> result = finalizationService.decide(
+                screeningId,
+                entityTagParser.parseVersion(ifMatch),
+                request,
+                idempotencyKey);
+        return ResponseEntity.status(result.status())
+                .eTag(entityTagParser.format(result.body().version()))
+                .body(result.body());
+    }
+
+    @PostMapping(path = "/screenings/{screeningId}/final-submission", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<ScreeningDetailResponse> finalSubmit(
+            @PathVariable UUID screeningId,
+            @RequestHeader(HttpHeaders.IF_MATCH) String ifMatch,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody ScreeningFinalSubmissionRequest request) {
+        ScreeningCommandResult<ScreeningDetailResponse> result = finalizationService.finalSubmit(
+                screeningId,
+                entityTagParser.parseVersion(ifMatch),
+                request,
+                idempotencyKey);
+        return ResponseEntity.status(result.status())
+                .eTag(entityTagParser.format(result.body().version()))
+                .body(result.body());
+    }
+
+    @PostMapping(path = "/screenings/{screeningId}/schedule", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<ScreeningScheduleResponse> schedule(
+            @PathVariable UUID screeningId,
+            @RequestHeader(HttpHeaders.IF_MATCH) String ifMatch,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody ScreeningScheduleRequest request) {
+        ScreeningCommandResult<ScreeningScheduleResponse> result = finalizationService.schedule(
+                screeningId,
+                entityTagParser.parseVersion(ifMatch),
+                request,
+                idempotencyKey);
+        return ResponseEntity.status(result.status())
+                .eTag(entityTagParser.format(result.body().version()))
                 .body(result.body());
     }
 }

@@ -162,6 +162,56 @@ class EntityInvariantTest {
         assertThat(finallySubmitted.getState()).isEqualTo(ScreeningState.APPROVED);
     }
 
+    @Test
+    void decisionFinalSubmissionAndSchedulingEnforceTheCanonicalOrderAndFinality() {
+        UserEntity staff = new UserEntity(UUID.randomUUID(), "staff-2", "hash", "Staff Member");
+        ScreeningEntity screening = screeningWithState(ScreeningState.SUBMITTED, null);
+        set(screening, "handler", staff);
+        screening.markReviewed();
+        screening.approve("  Confirm credits  ");
+        assertThat(screening.getState()).isEqualTo(ScreeningState.APPROVED);
+        assertThat(screening.getConditionalNotes()).isEqualTo("Confirm credits");
+
+        Instant finalTime = Instant.parse("2027-01-02T00:00:00Z");
+        screening.recordFinalSubmission(
+                "Final Film", "Final Cast", "Drama", 90, "Candidate Hall",
+                Instant.parse("2027-02-01T10:00:00Z"),
+                Instant.parse("2027-02-01T12:00:00Z"), finalTime);
+        assertThat(screening.getFinalSubmittedAt()).isEqualTo(finalTime);
+        assertThat(screening.getState()).isEqualTo(ScreeningState.APPROVED);
+        assertThatIllegalStateException().isThrownBy(() -> screening.recordFinalSubmission(
+                "Again", "Cast", "Drama", 90, "Hall",
+                Instant.parse("2027-02-01T10:00:00Z"),
+                Instant.parse("2027-02-01T12:00:00Z"), finalTime));
+
+        screening.schedule(
+                " Final Hall ",
+                Instant.parse("2027-02-01T11:00:00Z"),
+                Instant.parse("2027-02-01T13:00:00Z"));
+        assertThat(screening.getFinalAuditoriumName()).isEqualTo("Final Hall");
+        assertThat(screening.getState()).isEqualTo(ScreeningState.SCHEDULED);
+        assertThatIllegalStateException().isThrownBy(() -> screening.rejectFinallySubmitted("late rejection"));
+        assertThatIllegalStateException().isThrownBy(() -> screening.schedule(
+                "Other", Instant.parse("2027-02-01T14:00:00Z"),
+                Instant.parse("2027-02-01T16:00:00Z")));
+    }
+
+    @Test
+    void manualRejectionRequiresReasonAndSupportsBothPermittedDecisionPhases() {
+        ScreeningEntity reviewed = screeningWithState(ScreeningState.REVIEWED, null);
+        assertThatIllegalArgumentException().isThrownBy(() -> reviewed.rejectReviewed("   "));
+        assertThat(reviewed.getState()).isEqualTo(ScreeningState.REVIEWED);
+        reviewed.rejectReviewed("  Not suitable  ");
+        assertThat(reviewed.getState()).isEqualTo(ScreeningState.REJECTED);
+        assertThat(reviewed.getRejectionReason()).isEqualTo("Not suitable");
+
+        ScreeningEntity approved = screeningWithState(
+                ScreeningState.APPROVED, Instant.parse("2027-01-02T00:00:00Z"));
+        approved.rejectFinallySubmitted("Final changes unacceptable");
+        assertThat(approved.getState()).isEqualTo(ScreeningState.REJECTED);
+        assertThatIllegalStateException().isThrownBy(() -> approved.approve(null));
+    }
+
     private ProgramEntity validProgram() {
         return new ProgramEntity(
                 UUID.randomUUID(),

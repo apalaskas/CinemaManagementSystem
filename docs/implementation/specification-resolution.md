@@ -86,7 +86,7 @@ These are closed decisions:
 15. A `SUBMITTER` may see their Review only after a `PROGRAMMER` has made an `APPROVE` or `REJECT` decision. Before that, review fields are redacted even from the owner.
 16. Public Program auditorium information is derived from its active `SCHEDULED` Screenings; Program has no auditorium column.
 17. Scheduling conflict intervals are half-open: `existingStart < requestedEnd AND existingEnd > requestedStart`. Adjacent intervals are allowed.
-18. Conflict checks compare final auditorium case-insensitively and the final requested interval against active `SCHEDULED` screenings. Candidate auditorium conflicts are never checked.
+18. Conflict checks compare final auditorium case-insensitively and the final requested interval against every active `SCHEDULED` Screening across Programs. Candidate auditorium conflicts are never checked. Final scheduling runs at MySQL `SERIALIZABLE` isolation and combines the indexed overlap query with pessimistic locking so concurrent cross-Program requests cannot both pass a missing-row conflict check.
 19. Search filtering, access predicates, sorting, and pagination execute in MySQL. Loading an unrestricted set and filtering in Java is prohibited.
 20. Text filters are trimmed and case-insensitive. Screening title/cast/genre filters split input into words; every entered word must occur within the corresponding field. Different filters combine with AND.
 21. Every non-idempotent command endpoint requires `Idempotency-Key`. A key is scoped to the authenticated user across operations. Reuse by that user with the same operation and request hash replays the original successful response without a duplicate mutation. Reuse with different content or another operation returns `409`.

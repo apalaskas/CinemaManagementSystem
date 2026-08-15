@@ -310,13 +310,13 @@ Reject:
 { "decision": "REJECT", "reason": "Required nonblank rejection reason" }
 ```
 
-Require Program `SCHEDULING` and active `REVIEWED`. Approve sets `APPROVED`; reject records reason and sets final `REJECTED`. Audit and return `200` with updated detail/ETag. A successful decision makes Review fields visible to the owner.
+Require Program `SCHEDULING` and an active `REVIEWED` Screening. `APPROVE` sets `APPROVED` and stores trimmed optional `conditionalNotes`; `REJECT` requires a trimmed nonblank `reason`, records it, and sets final `REJECTED`. During Program `DECISION`, the only permitted decision is manual `REJECT` of an active `APPROVED` Screening whose `finalSubmittedAt` is present, again with a required nonblank reason; new approval is forbidden. Lock Program and Screening, recheck Program-specific `PROGRAMMER` authorization and `If-Match`, audit old/new state and decision data, store the idempotent result, and return `200` with `screeningId`, state, conditional notes/rejection reason, version, and ETag. `SCHEDULED` and `REJECTED` are immutable final states. A successful decision makes Review fields visible to the owner.
 
 ### POST `/api/v1/screenings/{screeningId}/final-submission`
 
 UC-S4 / FR-8.3. Owning `SUBMITTER`; `Idempotency-Key` and Screening `If-Match` required.
 
-Body may include final changes to the film, candidate auditorium, and explicit start/end fields allowed in the draft DTO; final auditorium is excluded. Require Program `FINAL_PUBLICATION`, active `APPROVED`, no prior final submission, complete valid resulting data. Atomically apply changes, set `finalSubmittedAt`, freeze details while keeping state `APPROVED`, audit, and return `200` with updated detail/ETag.
+Body may be empty to finalize the approved content unchanged, or may include only `filmTitle`, `cast`, `genre`, `durationMinutes`, `candidateAuditoriumName`, `startTime`, and `endTime`; final auditorium and all identity/state/role/review/audit fields are excluded. Require the authenticated owner and Program-specific `SUBMITTER` role before idempotency and after locking. Require Program `FINAL_PUBLICATION`, active `APPROVED`, no prior final submission, and complete valid resulting content: every text field nonblank, positive duration, both times, `endTime > startTime`, and interval at least the duration. Candidate conflicts are not checked. Atomically apply only supplied changes, set `finalSubmittedAt` from the UTC Clock, flush the optimistic version, audit the safe final snapshot/timestamp, store the idempotent result, and return `200` with the owner detail and ETag while state remains `APPROVED`. A non-replay second final submission returns `409`.
 
 ### POST `/api/v1/screenings/{screeningId}/schedule`
 
@@ -324,19 +324,19 @@ UC-S4 / FR-8.4. Managing `PROGRAMMER`; `Idempotency-Key` and Screening `If-Match
 
 ```json
 {
-  "finalAuditorium": "Auditorium A",
+  "finalAuditoriumName": "Auditorium A",
   "startTime": "2027-04-10T17:00:00Z",
   "endTime": "2027-04-10T19:15:00Z"
 }
 ```
 
-Require Program `DECISION`, active `APPROVED`, and nonnull `finalSubmittedAt`. Validate explicit final interval against duration. Conflict query compares final auditorium case-insensitively across other active `SCHEDULED` Screenings using:
+Require Program-specific `PROGRAMMER`, Program `DECISION`, active `APPROVED`, nonnull `finalSubmittedAt`, a trimmed nonblank `finalAuditoriumName`, and explicit final times whose interval is positive and at least the persisted duration. The final auditorium may confirm or replace the candidate auditorium. Conflict query compares final auditorium case-insensitively across every other active `SCHEDULED` Screening using:
 
 ```text
 existingStart < requestedEnd AND existingEnd > requestedStart
 ```
 
-Candidate auditorium never participates. Under conflict-safe locking, no conflict atomically sets final auditorium/times and final state `SCHEDULED`, audits, and returns `200` plus updated ETag. Conflict returns `409 SCHEDULE_CONFLICT` without state change.
+Candidate auditorium never participates. Scheduling runs in a MySQL `SERIALIZABLE` transaction and uses the indexed pessimistic-locking overlap query, including next-key/gap protection for an empty result, so cross-Program concurrent requests cannot both pass. No conflict atomically sets final auditorium/times and final state `SCHEDULED`, flushes the optimistic version, audits, stores the idempotent result, and returns `200` with safe final scheduling data plus ETag. Conflict returns `409 SCHEDULING_CONFLICT` without identifying the conflicting Screening. Exact retries replay; payload/key reuse mismatches return `409`.
 
 ### GET `/api/v1/programs/{programId}/screenings`
 

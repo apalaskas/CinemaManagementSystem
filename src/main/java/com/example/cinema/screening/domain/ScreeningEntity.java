@@ -281,12 +281,102 @@ public class ScreeningEntity {
         state = ScreeningState.REVIEWED;
     }
 
+    public void approve(String notes) {
+        requireActiveState(ScreeningState.REVIEWED, "Only an active REVIEWED Screening may be approved");
+        conditionalNotes = notes == null || notes.isBlank() ? null : notes.strip();
+        rejectionReason = null;
+        state = ScreeningState.APPROVED;
+    }
+
+    public void rejectReviewed(String reason) {
+        requireActiveState(ScreeningState.REVIEWED, "Only an active REVIEWED Screening may be rejected");
+        reject(reason);
+    }
+
+    public void rejectFinallySubmitted(String reason) {
+        requireActiveState(ScreeningState.APPROVED,
+                "Only an active APPROVED Screening may be rejected after final submission");
+        if (finalSubmittedAt == null) {
+            throw new IllegalStateException("Final submission is required before manual rejection in DECISION");
+        }
+        reject(reason);
+    }
+
+    public void recordFinalSubmission(
+            String finalFilmTitle,
+            String finalCastText,
+            String finalGenre,
+            Integer finalDurationMinutes,
+            String finalCandidateAuditoriumName,
+            Instant finalStartTime,
+            Instant finalEndTime,
+            Instant submittedAt) {
+        requireActiveState(ScreeningState.APPROVED,
+                "Only an active APPROVED Screening may receive a final submission");
+        if (finalSubmittedAt != null) {
+            throw new IllegalStateException("A Screening may be finally submitted only once");
+        }
+        filmTitle = requiredText(finalFilmTitle, "filmTitle", 255);
+        castText = requireNonBlank(finalCastText, "cast");
+        genre = requiredText(finalGenre, "genre", 255);
+        durationMinutes = requirePositiveDuration(finalDurationMinutes);
+        candidateAuditoriumName = requiredText(
+                finalCandidateAuditoriumName, "candidateAuditoriumName", 255);
+        requireNonNull(finalStartTime, "startTime");
+        requireNonNull(finalEndTime, "endTime");
+        validateInterval(finalStartTime, finalEndTime, durationMinutes);
+        startTime = finalStartTime;
+        endTime = finalEndTime;
+        finalSubmittedAt = requireNonNull(submittedAt, "submittedAt");
+    }
+
+    public void schedule(String auditoriumName, Instant finalStartTime, Instant finalEndTime) {
+        requireActiveState(ScreeningState.APPROVED,
+                "Only an active APPROVED Screening may be scheduled");
+        if (finalSubmittedAt == null) {
+            throw new IllegalStateException("Final submission is required before scheduling");
+        }
+        finalAuditoriumName = requiredText(auditoriumName, "finalAuditoriumName", 255);
+        requireNonNull(finalStartTime, "startTime");
+        requireNonNull(finalEndTime, "endTime");
+        validateInterval(finalStartTime, finalEndTime, requirePositiveDuration(durationMinutes));
+        startTime = finalStartTime;
+        endTime = finalEndTime;
+        state = ScreeningState.SCHEDULED;
+    }
+
     public void rejectForMissingFinalSubmission(String reason) {
         if (state != ScreeningState.APPROVED || finalSubmittedAt != null) {
             throw new IllegalStateException(
                     "Only an APPROVED Screening without final submission may be automatically rejected");
         }
+        reject(reason);
+    }
+
+    private void requireActiveState(ScreeningState requiredState, String message) {
+        if (deletedAt != null || state != requiredState || state.isFinal()) {
+            throw new IllegalStateException(message);
+        }
+    }
+
+    private void reject(String reason) {
+        String normalizedReason = requireNonBlank(reason, "reason");
         state = ScreeningState.REJECTED;
-        rejectionReason = requireNonBlank(reason, "reason");
+        rejectionReason = normalizedReason;
+    }
+
+    private static Integer requirePositiveDuration(Integer value) {
+        if (value == null || value <= 0) {
+            throw new IllegalArgumentException("durationMinutes must be positive");
+        }
+        return value;
+    }
+
+    private static String requiredText(String value, String field, int maximumLength) {
+        String normalized = requireNonBlank(value, field);
+        if (normalized.length() > maximumLength) {
+            throw new IllegalArgumentException(field + " is too long");
+        }
+        return normalized;
     }
 }
