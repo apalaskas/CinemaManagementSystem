@@ -204,6 +204,26 @@ class SearchAndVisibilityServiceTest {
     }
 
     @Test
+    void projectionFailsClosedIfARepositoryRowIsNeitherAnnouncedNorManagedByRequester() {
+        ProgramEntity concealed = program(MANAGED_ID, user, "Concealed");
+        when(currentUser.optional()).thenReturn(Optional.of(identity()));
+        when(programRepository.searchVisible(any(), eq(USER_ID), eq(0), eq(20)))
+                .thenReturn(new ProgramSearchPage(List.of(concealed), 1));
+        when(roleRepository.findProgramIdsForUserRole(
+                List.of(MANAGED_ID), USER_ID, ProgramRoleType.PROGRAMMER)).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.searchPrograms(parameters(null, null, null, 0, null)))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessageNotContaining("Program")
+                .hasMessageNotContaining(MANAGED_ID.toString());
+
+        verify(roleRepository, never()).findProgrammerNames(any());
+        verify(screeningRepository, never()).findDistinctScheduledAuditoriums(any());
+        verify(roleRepository, never()).findAllWithUsersByProgramIds(any());
+        verify(screeningRepository, never()).countActiveAndScheduledByProgramIds(any());
+    }
+
+    @Test
     void directViewReturnsPublicFullOrAccessSafeNotFoundFromVisibleQuery() {
         ProgramEntity publicProgram = announcedProgram(PUBLIC_ID, user, "Public");
         when(currentUser.optional()).thenReturn(Optional.empty());

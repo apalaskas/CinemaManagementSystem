@@ -1,8 +1,14 @@
 package com.example.cinema.program.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -15,6 +21,9 @@ import com.example.cinema.program.api.ProgramSortDirection;
 import com.example.cinema.program.domain.ProgramRoleType;
 import com.example.cinema.program.domain.ProgramState;
 import com.example.cinema.screening.domain.ScreeningState;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.TypedQuery;
 
 class ProgramSearchRepositoryImplTest {
 
@@ -114,6 +123,21 @@ class ProgramSearchRepositoryImplTest {
     }
 
     @Test
+    void authenticatedVisibilityIsCorrelatedToTheSameProgramAndOnlyProgrammerRole() {
+        var plan = ProgramSearchRepositoryImpl.queryPlan(
+                criteria(ProgramSortDirection.ASC), USER_ID, false, null);
+
+        assertThat(plan.jpql())
+                .contains("role.id.programId = p.id")
+                .contains("role.id.userId = :requesterUserId")
+                .contains("role.role = :programmerRole")
+                .doesNotContain("STAFF", "SUBMITTER");
+        assertThat(plan.parameters())
+                .containsEntry("requesterUserId", USER_ID)
+                .containsEntry("programmerRole", ProgramRoleType.PROGRAMMER);
+    }
+
+    @Test
     void appliesRequestedDirectionToAllThreeStableSortKeys() {
         var ascending = ProgramSearchRepositoryImpl.queryPlan(criteria(ProgramSortDirection.ASC), null, false, null);
         var descending = ProgramSearchRepositoryImpl.queryPlan(criteria(ProgramSortDirection.DESC), null, false, null);
@@ -131,6 +155,29 @@ class ProgramSearchRepositoryImplTest {
         assertThat(count.jpql()).startsWith("select count(p)").doesNotContain("fetch", "order by");
         assertThat(detail.jpql()).contains("join fetch p.creator", "p.id = :programId");
         assertThat(detail.parameters()).containsEntry("programId", programId);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void executesCountOffsetLimitAndOrderedSelectionThroughEntityManager() {
+        EntityManager entityManager = mock(EntityManager.class);
+        TypedQuery<Long> countQuery = mock(TypedQuery.class);
+        TypedQuery<com.example.cinema.program.domain.ProgramEntity> dataQuery = mock(TypedQuery.class);
+        when(entityManager.createQuery(anyString(), eq(Long.class))).thenReturn(countQuery);
+        when(entityManager.createQuery(anyString(), eq(com.example.cinema.program.domain.ProgramEntity.class)))
+                .thenReturn(dataQuery);
+        when(countQuery.getSingleResult()).thenReturn(35L);
+        when(dataQuery.getResultList()).thenReturn(List.of());
+
+        var repository = new ProgramSearchRepositoryImpl(entityManager);
+        var result = repository.searchVisible(criteria(ProgramSortDirection.DESC), null, 2, 10);
+
+        verify(countQuery).getSingleResult();
+        verify(dataQuery).setFirstResult(20);
+        verify(dataQuery).setMaxResults(10);
+        verify(dataQuery).getResultList();
+        assertThat(result.totalElements()).isEqualTo(35);
+        assertThat(result.programs()).isEmpty();
     }
 
     private static ProgramSearchCriteria criteria(ProgramSortDirection direction) {

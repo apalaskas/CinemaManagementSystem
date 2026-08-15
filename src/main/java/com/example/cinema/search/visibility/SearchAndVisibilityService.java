@@ -28,6 +28,7 @@ import com.example.cinema.program.api.UserSummaryResponse;
 import com.example.cinema.program.domain.ProgramEntity;
 import com.example.cinema.program.domain.ProgramRoleEntity;
 import com.example.cinema.program.domain.ProgramRoleType;
+import com.example.cinema.program.domain.ProgramState;
 import com.example.cinema.program.repository.ProgramRepository;
 import com.example.cinema.program.repository.ProgramRoleRepository;
 import com.example.cinema.program.repository.ProgramSearchCriteria;
@@ -92,6 +93,12 @@ public class SearchAndVisibilityService {
                 ? Set.of()
                 : Set.copyOf(roleRepository.findProgramIdsForUserRole(
                         programIds, requesterUserId, ProgramRoleType.PROGRAMMER));
+        boolean containsConcealedProgram = programs.stream().anyMatch(program ->
+                program.getState() != ProgramState.ANNOUNCED
+                        && !managedProgramIds.contains(program.getId()));
+        if (containsConcealedProgram) {
+            throw new ResourceNotFoundException();
+        }
 
         Map<UUID, List<String>> programmerNames = groupProgrammerNames(
                 roleRepository.findProgrammerNames(programIds));

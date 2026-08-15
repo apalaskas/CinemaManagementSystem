@@ -58,6 +58,7 @@ import com.example.cinema.user.authentication.CurrentUser;
 class ProgramSearchControllerWebTest {
 
     private static final UUID PROGRAM_ID = UUID.fromString("cccccccc-cccc-cccc-cccc-cccccccccccc");
+    private static final UUID OTHER_PROGRAM_ID = UUID.fromString("dddddddd-dddd-dddd-dddd-dddddddddddd");
     private static final UUID USER_ID = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     private static final Instant NOW = Instant.parse("2026-08-15T09:00:00Z");
 
@@ -178,8 +179,17 @@ class ProgramSearchControllerWebTest {
     @Test
     void directMissingAndConcealedProgramsShareTheSameSafe404() throws Exception {
         when(searchService.viewProgram(PROGRAM_ID)).thenThrow(new ResourceNotFoundException());
+        when(searchService.viewProgram(OTHER_PROGRAM_ID)).thenThrow(new ResourceNotFoundException());
 
         mockMvc.perform(get("/api/v1/programs/{programId}", PROGRAM_ID))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("RESOURCE_NOT_FOUND"))
+                .andExpect(jsonPath("$.detail").value("The requested resource was not found."))
+                .andExpect(content().string(not(containsString("Program exists"))))
+                .andExpect(content().string(not(containsString("state"))))
+                .andExpect(content().string(not(containsString("SQL"))));
+
+        mockMvc.perform(get("/api/v1/programs/{programId}", OTHER_PROGRAM_ID))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("RESOURCE_NOT_FOUND"))
                 .andExpect(jsonPath("$.detail").value("The requested resource was not found."))
@@ -197,8 +207,14 @@ class ProgramSearchControllerWebTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content[0].state").value("CREATED"))
                 .andExpect(jsonPath("$.content[0].creator").exists())
+                .andExpect(jsonPath("$.content[0].version").value(4))
+                .andExpect(jsonPath("$.content[0].roles").isArray())
+                .andExpect(jsonPath("$.content[0].screenings").exists())
                 .andExpect(jsonPath("$.content[1].state").doesNotExist())
-                .andExpect(jsonPath("$.content[1].creator").doesNotExist());
+                .andExpect(jsonPath("$.content[1].creator").doesNotExist())
+                .andExpect(jsonPath("$.content[1].version").doesNotExist())
+                .andExpect(jsonPath("$.content[1].roles").doesNotExist())
+                .andExpect(jsonPath("$.content[1].screenings").doesNotExist());
     }
 
     private static PublicProgramResponse publicResponse() {
