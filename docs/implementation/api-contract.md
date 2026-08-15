@@ -96,6 +96,28 @@ Clients may send `X-Correlation-ID` using 1-100 letters, digits, `.`, `_`, or `-
 
 `ProgramSummaryResponse` contains `programId`, `name`, `description`, `startDate`, `endDate`, `state`, and the role-allowed public auditorium/programmer information. `ProgramDetailResponse` additionally contains `createdAt`, `version`, creator and role details when visible, and managed Screening links/summaries when requested by the service projection.
 
+The Program command projection currently returned by create and update is:
+
+```json
+{
+  "programId": "canonical-uuid",
+  "name": "Spring Retrospective 2027",
+  "description": "Curated seasonal programme",
+  "startDate": "2027-03-01",
+  "endDate": "2027-05-31",
+  "state": "CREATED",
+  "createdAt": "2026-08-15T10:15:30Z",
+  "version": 0,
+  "creator": {
+    "userId": "canonical-uuid",
+    "username": "normalized-username",
+    "fullName": "Display Name"
+  }
+}
+```
+
+It is an explicit DTO and never contains credential data. `ProgramRoleResponse` contains `programId`, `userId`, `fullName`, `role`, `assignedAt`, `assignedByUserId`, and `programVersion`; `programVersion` is the value represented by the response `ETag`.
+
 Public callers receive only `ANNOUNCED` Programs: ID, name, description, dates, programmer display names, and auditorium information derived from active `SCHEDULED` Screenings. A managing `PROGRAMMER` receives full fields for their Programs in any lifecycle state. Other relationships do not broaden Program visibility beyond the documented public projection.
 
 ### Screening draft/final fields
@@ -144,7 +166,7 @@ Body contains at least one of `name`, `description`, `startDate`, `endDate`. Nul
 
 ### DELETE `/api/v1/programs/{programId}`
 
-UC-P2 / FR-2.4. Managing `PROGRAMMER`; Program `If-Match` required. Allowed only in `CREATED`. Audit atomically and return `204 No Content`. A repeated authorized delete has no additional effect.
+UC-P2 / FR-2.4. Managing `PROGRAMMER`; Program `If-Match` required. Allowed only in `CREATED`. Audit atomically and return `204 No Content`. The migration-defined `ON DELETE CASCADE` removes dependent Program roles and Screenings (and their dependent Reviews), while shared `cms_user` rows and the Program audit snapshot remain. A later repeat does not create another mutation or audit entry and receives the same access-safe generic `404` used for an unavailable Program, without exposing prior private existence.
 
 ### POST `/api/v1/programs/{programId}/roles`
 
@@ -156,9 +178,11 @@ UC-P2 / FR-2.3, FR-3. Managing `PROGRAMMER`; `Idempotency-Key` and Program `If-M
 
 Manually accepted role values are `PROGRAMMER` and `STAFF`; `SUBMITTER` is assigned/verified through Screening creation. Target user must exist. Enforce one role per Program and creator protection. `STAFF` assignment is allowed only in `CREATED`; PROGRAMMER management remains allowed until `ANNOUNCED`. Return `201` with `ProgramRoleResponse` and updated Program ETag. Duplicate/conflicting role or frozen STAFF is `409`.
 
+An exact duplicate assignment is `409 PROGRAM_ROLE_EXISTS`; assignment where the target already has a different `PROGRAMMER`, `STAFF`, or `SUBMITTER` role is `409 ROLE_CONFLICT`. An exact completed idempotency replay returns the stored `201` instead of re-running either check.
+
 ### DELETE `/api/v1/programs/{programId}/roles/{userId}`
 
-UC-P2 / FR-2.3, FR-3. Managing `PROGRAMMER`; Program `If-Match` required. Remove a non-creator PROGRAMMER before `ANNOUNCED`, or STAFF only while `CREATED`. The creator cannot be removed. Return `204`; lifecycle/creator conflict is `409`.
+UC-P2 / FR-2.3, FR-3. Managing `PROGRAMMER`; Program `If-Match` required. Remove a non-creator PROGRAMMER before `ANNOUNCED`, or STAFF only while `CREATED`. The creator cannot be removed. Return `204`; lifecycle/creator conflict is `409`. A missing managed assignment is the safe `404 PROGRAM_ROLE_NOT_FOUND`; a `SUBMITTER` assignment is intentionally treated the same way because this endpoint does not expose SUBMITTER removal.
 
 ### POST `/api/v1/programs/{programId}/transitions`
 

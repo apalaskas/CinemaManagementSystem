@@ -26,4 +26,6 @@ public interface ProgramRoleRepository extends JpaRepository<ProgramRoleEntity, 
     boolean existsByProgramIdAndRole(
             @Param("programId") UUID programId,
             @Param("role") ProgramRoleType role);
+
+    long countByIdProgramId(UUID programId);
 }

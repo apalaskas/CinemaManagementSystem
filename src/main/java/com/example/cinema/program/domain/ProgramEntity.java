@@ -118,4 +118,22 @@ public class ProgramEntity {
     public long getVersion() {
         return version;
     }
+
+    public void updateDetails(
+            String name,
+            String description,
+            LocalDate startDate,
+            LocalDate endDate) {
+        String normalizedName = requireNonBlank(name, "name");
+        String normalizedDescription = requireNonBlank(description, "description");
+        LocalDate requiredStartDate = requireNonNull(startDate, "startDate");
+        LocalDate requiredEndDate = requireNonNull(endDate, "endDate");
+        if (requiredEndDate.isBefore(requiredStartDate)) {
+            throw new IllegalArgumentException("endDate must not be before startDate");
+        }
+        this.name = normalizedName;
+        this.description = normalizedDescription;
+        this.startDate = requiredStartDate;
+        this.endDate = requiredEndDate;
+    }
 }

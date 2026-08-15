@@ -14,9 +14,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 
@@ -92,6 +94,22 @@ public class GlobalExceptionHandler {
             HttpMessageNotReadableException exception,
             HttpServletRequest request) {
         return response(HttpStatus.BAD_REQUEST, "MALFORMED_REQUEST", "The request body is invalid.", request);
+    }
+
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    ResponseEntity<ProblemDetail> handleMissingHeader(
+            MissingRequestHeaderException exception,
+            HttpServletRequest request) {
+        return response(HttpStatus.BAD_REQUEST, "MISSING_REQUIRED_HEADER",
+                "A required request header is missing.", request);
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    ResponseEntity<ProblemDetail> handleTypeMismatch(
+            MethodArgumentTypeMismatchException exception,
+            HttpServletRequest request) {
+        return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST_PARAMETER",
+                "A request parameter has an invalid value.", request);
     }
 
     @ExceptionHandler(NoResourceFoundException.class)
