@@ -88,19 +88,30 @@ public interface ScreeningRepository extends JpaRepository<ScreeningEntity, UUID
             from ScreeningEntity s
             where s.program.id = :programId
               and s.deletedAt is null
+              and s.state <> com.example.cinema.screening.domain.ScreeningState.CREATED
               and (
-                  s.state = com.example.cinema.screening.domain.ScreeningState.SUBMITTED
-                  or (
-                      s.state = com.example.cinema.screening.domain.ScreeningState.REVIEWED
-                      and not exists (
-                          select review.id
-                          from ReviewEntity review
-                          where review.screening.id = s.id
-                      )
+                  s.state <> com.example.cinema.screening.domain.ScreeningState.REVIEWED
+                  or not exists (
+                      select review.id
+                      from ReviewEntity review
+                      where review.screening.id = s.id
                   )
               )
             """)
-    long countActiveIncompleteReviews(@Param("programId") UUID programId);
+    long countActiveReviewCompletionViolations(@Param("programId") UUID programId);
+
+    @Query("""
+            select count(s)
+            from ScreeningEntity s
+            where s.program.id = :programId
+              and s.deletedAt is null
+              and s.state not in (
+                  com.example.cinema.screening.domain.ScreeningState.CREATED,
+                  com.example.cinema.screening.domain.ScreeningState.APPROVED,
+                  com.example.cinema.screening.domain.ScreeningState.REJECTED
+              )
+            """)
+    long countActiveDecisionPreparationViolations(@Param("programId") UUID programId);
 
     @Query("""
             select count(s)

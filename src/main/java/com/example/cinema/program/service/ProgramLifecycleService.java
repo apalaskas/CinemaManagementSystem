@@ -142,13 +142,12 @@ public class ProgramLifecycleService {
                 yield 0;
             }
             case SCHEDULING -> {
-                require(screeningRepository.countActiveIncompleteReviews(programId) == 0,
+                require(screeningRepository.countActiveReviewCompletionViolations(programId) == 0,
                         "Every active Screening that entered review must have a completed Review and be REVIEWED.");
                 yield 0;
             }
             case FINAL_PUBLICATION -> {
-                require(screeningRepository.countActiveByProgramIdAndState(
-                        programId, ScreeningState.REVIEWED) == 0,
+                require(screeningRepository.countActiveDecisionPreparationViolations(programId) == 0,
                         "Every reviewed Screening must be APPROVED or REJECTED before final publication.");
                 yield 0;
             }

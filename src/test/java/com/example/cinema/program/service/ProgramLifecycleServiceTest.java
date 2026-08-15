@@ -65,6 +65,7 @@ class ProgramLifecycleServiceTest {
     private static final UUID ACTOR_ID = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     private static final UUID PROGRAM_ID = UUID.fromString("cccccccc-cccc-cccc-cccc-cccccccccccc");
     private static final UUID SCREENING_ID = UUID.fromString("dddddddd-dddd-dddd-dddd-dddddddddddd");
+    private static final UUID SECOND_SCREENING_ID = UUID.fromString("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
 
     private final ProgramRepository programRepository = org.mockito.Mockito.mock(ProgramRepository.class);
     private final ProgramRoleRepository roleRepository = org.mockito.Mockito.mock(ProgramRoleRepository.class);
@@ -199,7 +200,7 @@ class ProgramLifecycleServiceTest {
     void requiresCompletedReviewsBeforeScheduling() {
         when(programRepository.findByIdForUpdate(PROGRAM_ID))
                 .thenReturn(Optional.of(program(ProgramState.REVIEW, 0)));
-        when(screeningRepository.countActiveIncompleteReviews(PROGRAM_ID)).thenReturn(1L);
+        when(screeningRepository.countActiveReviewCompletionViolations(PROGRAM_ID)).thenReturn(1L);
 
         assertPrerequisiteFailure(ProgramState.SCHEDULING);
     }
@@ -208,8 +209,7 @@ class ProgramLifecycleServiceTest {
     void requiresEveryReviewedScreeningToBeDecidedBeforeFinalPublication() {
         when(programRepository.findByIdForUpdate(PROGRAM_ID))
                 .thenReturn(Optional.of(program(ProgramState.SCHEDULING, 0)));
-        when(screeningRepository.countActiveByProgramIdAndState(PROGRAM_ID, ScreeningState.REVIEWED))
-                .thenReturn(1L);
+        when(screeningRepository.countActiveDecisionPreparationViolations(PROGRAM_ID)).thenReturn(1L);
 
         assertPrerequisiteFailure(ProgramState.FINAL_PUBLICATION);
     }
@@ -228,21 +228,25 @@ class ProgramLifecycleServiceTest {
     void automaticallyRejectsEveryApprovedScreeningMissingFinalSubmissionAndSystemAuditsEach() {
         ProgramEntity program = program(ProgramState.FINAL_PUBLICATION, 3);
         ScreeningEntity screening = screening(ScreeningState.APPROVED, null, 7);
+        ScreeningEntity secondScreening = screening(SECOND_SCREENING_ID, ScreeningState.APPROVED, null, 11);
         when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(program));
         when(screeningRepository.findApprovedWithoutFinalSubmissionForUpdate(PROGRAM_ID))
-                .thenReturn(List.of(screening));
+                .thenReturn(List.of(screening, secondScreening));
         when(screeningRepository.saveAllAndFlush(any())).thenAnswer(invocation -> {
             set(screening, "version", 8L);
+            set(secondScreening, "version", 12L);
             return invocation.getArgument(0);
         });
 
         ProgramCommandResult<ProgramTransitionResponse> result =
                 transition(ProgramState.DECISION, 3, "decision-key");
 
-        assertThat(result.body().automaticallyRejectedScreenings()).isOne();
+        assertThat(result.body().automaticallyRejectedScreenings()).isEqualTo(2);
         assertThat(screening.getState()).isEqualTo(ScreeningState.REJECTED);
         assertThat(screening.getRejectionReason()).isEqualTo("FINAL_SUBMISSION_MISSING");
-        verify(screeningRepository).saveAllAndFlush(List.of(screening));
+        assertThat(secondScreening.getState()).isEqualTo(ScreeningState.REJECTED);
+        assertThat(secondScreening.getRejectionReason()).isEqualTo("FINAL_SUBMISSION_MISSING");
+        verify(screeningRepository).saveAllAndFlush(List.of(screening, secondScreening));
         org.mockito.ArgumentCaptor<Map> oldSnapshot = org.mockito.ArgumentCaptor.forClass(Map.class);
         org.mockito.ArgumentCaptor<Map> newSnapshot = org.mockito.ArgumentCaptor.forClass(Map.class);
         verify(auditLoggingService).recordSystemAction(
@@ -252,6 +256,33 @@ class ProgramLifecycleServiceTest {
         assertThat(newSnapshot.getValue())
                 .containsEntry("state", ScreeningState.REJECTED)
                 .containsEntry("rejectionReason", "FINAL_SUBMISSION_MISSING");
+        verify(auditLoggingService).recordSystemAction(
+                eq("SCREENING_AUTOMATICALLY_REJECTED"), eq("SCREENING"), eq(SECOND_SCREENING_ID),
+                any(), any(), eq("FINAL_SUBMISSION_MISSING"));
+    }
+
+    @Test
+    @SuppressWarnings("rawtypes")
+    void recordsActorOldStateNewStateVersionAndTimestampInOneProgramAudit() {
+        when(programRepository.findByIdForUpdate(PROGRAM_ID))
+                .thenReturn(Optional.of(program(ProgramState.SUBMISSION, 6)));
+
+        transition(ProgramState.ASSIGNMENT, 6, "audit-key");
+
+        org.mockito.ArgumentCaptor<Map> oldSnapshot = org.mockito.ArgumentCaptor.forClass(Map.class);
+        org.mockito.ArgumentCaptor<Map> newSnapshot = org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(auditLoggingService).recordUserAction(
+                eq(ACTOR_ID), eq("PROGRAM_STATE_TRANSITIONED"), eq("PROGRAM"), eq(PROGRAM_ID),
+                oldSnapshot.capture(), newSnapshot.capture(), eq(null));
+        assertThat(oldSnapshot.getValue())
+                .containsEntry("state", ProgramState.SUBMISSION)
+                .containsEntry("version", 6L)
+                .containsEntry("transitionedAt", null);
+        assertThat(newSnapshot.getValue())
+                .containsEntry("state", ProgramState.ASSIGNMENT)
+                .containsEntry("version", 7L)
+                .containsEntry("transitionedAt", NOW);
+        verify(auditLoggingService, never()).recordSystemAction(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -287,6 +318,23 @@ class ProgramLifecycleServiceTest {
     }
 
     @Test
+    void programWriteFailureAfterAutomaticRejectionCannotProduceAStoredSuccess() throws Exception {
+        ProgramEntity program = program(ProgramState.FINAL_PUBLICATION, 4);
+        ScreeningEntity screening = screening(ScreeningState.APPROVED, null, 2);
+        when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(program));
+        when(screeningRepository.findApprovedWithoutFinalSubmissionForUpdate(PROGRAM_ID))
+                .thenReturn(List.of(screening));
+        doThrow(new ObjectOptimisticLockingFailureException(ProgramEntity.class, PROGRAM_ID))
+                .when(programRepository).saveAndFlush(program);
+
+        assertThatThrownBy(() -> transition(ProgramState.DECISION, 4, "program-write-failure"))
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
+        verify(screeningRepository).saveAllAndFlush(List.of(screening));
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+        verify(objectMapper, never()).writeValueAsString(any());
+    }
+
+    @Test
     void auditFailureAbortsTheTransactionalCommand() {
         ProgramEntity program = program(ProgramState.SUBMISSION, 1);
         when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(program));
@@ -297,6 +345,24 @@ class ProgramLifecycleServiceTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("audit unavailable");
         verify(programRepository).saveAndFlush(program);
+    }
+
+    @Test
+    void automaticRejectionAuditFailureAbortsBeforeProgramMutationAndUserAudit() {
+        ScreeningEntity screening = screening(ScreeningState.APPROVED, null, 0);
+        when(programRepository.findByIdForUpdate(PROGRAM_ID))
+                .thenReturn(Optional.of(program(ProgramState.FINAL_PUBLICATION, 0)));
+        when(screeningRepository.findApprovedWithoutFinalSubmissionForUpdate(PROGRAM_ID))
+                .thenReturn(List.of(screening));
+        doThrow(new IllegalStateException("screening audit unavailable"))
+                .when(auditLoggingService).recordSystemAction(any(), any(), any(), any(), any(), any());
+
+        assertThatThrownBy(() -> transition(ProgramState.DECISION, 0, "audit-failure-key"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("screening audit unavailable");
+        verify(screeningRepository).saveAllAndFlush(List.of(screening));
+        verify(programRepository, never()).saveAndFlush(any());
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -314,6 +380,24 @@ class ProgramLifecycleServiceTest {
         assertThat(result.body()).isEqualTo(stored);
         verify(programRepository, never()).findByIdForUpdate(any());
         verify(screeningRepository, never()).findApprovedWithoutFinalSubmissionForUpdate(any());
+    }
+
+    @Test
+    @SuppressWarnings("rawtypes")
+    void hashesProgramRouteExpectedVersionAndTargetStateForIdempotency() {
+        when(programRepository.findByIdForUpdate(PROGRAM_ID))
+                .thenReturn(Optional.of(program(ProgramState.SUBMISSION, 9)));
+
+        transition(ProgramState.ASSIGNMENT, 9, "canonical-key");
+
+        org.mockito.ArgumentCaptor<Object> canonicalRequest =
+                org.mockito.ArgumentCaptor.forClass(Object.class);
+        verify(idempotencyManager).execute(
+                eq("PROGRAM.TRANSITION"), eq("canonical-key"), canonicalRequest.capture(), any());
+        assertThat((Map) canonicalRequest.getValue())
+                .containsEntry("programId", PROGRAM_ID)
+                .containsEntry("expectedVersion", 9L)
+                .containsEntry("targetState", ProgramState.ASSIGNMENT);
     }
 
     @Test
@@ -385,8 +469,16 @@ class ProgramLifecycleServiceTest {
     }
 
     private ScreeningEntity screening(ScreeningState state, Instant finalSubmittedAt, long version) {
+        return screening(SCREENING_ID, state, finalSubmittedAt, version);
+    }
+
+    private ScreeningEntity screening(
+            UUID screeningId,
+            ScreeningState state,
+            Instant finalSubmittedAt,
+            long version) {
         ScreeningEntity screening = new ScreeningEntity(
-                SCREENING_ID, program(ProgramState.FINAL_PUBLICATION, 0), actor,
+                screeningId, program(ProgramState.FINAL_PUBLICATION, 0), actor,
                 "Film", "Cast", "Drama", 90, "A", null, null, NOW);
         set(screening, "state", state);
         set(screening, "finalSubmittedAt", finalSubmittedAt);

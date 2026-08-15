@@ -123,6 +123,50 @@ class JpaMappingContractTest {
                 .contains("order by s.id");
     }
 
+    @Test
+    void lifecycleGuardQueriesCoverTheCompleteActiveWorkflowSet() throws ReflectiveOperationException {
+        String handlerGuard = ScreeningRepository.class
+                .getMethod("countActiveSubmittedWithoutFrozenStaffHandler", UUID.class)
+                .getAnnotation(Query.class).value();
+        assertThat(handlerGuard)
+                .contains("s.deletedAt is null")
+                .contains("ScreeningState.SUBMITTED")
+                .contains("s.handler is null")
+                .contains("ProgramRoleType.STAFF")
+                .contains("r.id.userId = s.handler.id");
+
+        String reviewGuard = ScreeningRepository.class
+                .getMethod("countActiveReviewCompletionViolations", UUID.class)
+                .getAnnotation(Query.class).value();
+        assertThat(reviewGuard)
+                .contains("s.deletedAt is null")
+                .contains("s.state <> com.example.cinema.screening.domain.ScreeningState.CREATED")
+                .contains("s.state <> com.example.cinema.screening.domain.ScreeningState.REVIEWED")
+                .contains("not exists")
+                .contains("ReviewEntity");
+
+        String decisionPreparationGuard = ScreeningRepository.class
+                .getMethod("countActiveDecisionPreparationViolations", UUID.class)
+                .getAnnotation(Query.class).value();
+        assertThat(decisionPreparationGuard)
+                .contains("s.deletedAt is null")
+                .contains("s.state not in")
+                .contains("ScreeningState.CREATED")
+                .contains("ScreeningState.APPROVED")
+                .contains("ScreeningState.REJECTED");
+
+        String announcementGuard = ScreeningRepository.class
+                .getMethod("countActiveNonFinalDecisionWorkflow", UUID.class)
+                .getAnnotation(Query.class).value();
+        assertThat(announcementGuard)
+                .contains("s.deletedAt is null")
+                .contains("ScreeningState.SUBMITTED")
+                .contains("ScreeningState.REVIEWED")
+                .contains("ScreeningState.APPROVED")
+                .doesNotContain("ScreeningState.SCHEDULED")
+                .doesNotContain("ScreeningState.REJECTED");
+    }
+
     private static String tableName(Class<?> entityType) {
         return entityType.getAnnotation(Table.class).name();
     }
