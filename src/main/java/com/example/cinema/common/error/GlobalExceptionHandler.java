@@ -121,7 +121,7 @@ public class GlobalExceptionHandler {
     ResponseEntity<ProblemDetail> handleOptimisticLock(
             ObjectOptimisticLockingFailureException exception,
             HttpServletRequest request) {
-        return response(HttpStatus.CONFLICT, "OPTIMISTIC_CONCURRENCY_CONFLICT",
+        return response(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
                 "The resource changed while the request was being processed.", request);
     }
 

@@ -77,6 +77,10 @@ public final class ProgramUpdateRequest {
         rejectReadOnlyField("creator");
     }
 
+    public void setCreatorUserId(Object ignored) {
+        rejectReadOnlyField("creatorUserId");
+    }
+
     public void setCreatedAt(Object ignored) {
         rejectReadOnlyField("createdAt");
     }
@@ -91,6 +95,10 @@ public final class ProgramUpdateRequest {
 
     public void setId(Object ignored) {
         rejectReadOnlyField("id");
+    }
+
+    public void setUserId(Object ignored) {
+        rejectReadOnlyField("userId");
     }
 
     public void setVersion(Object ignored) {

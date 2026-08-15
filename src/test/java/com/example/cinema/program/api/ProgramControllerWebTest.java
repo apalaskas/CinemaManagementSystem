@@ -38,13 +38,18 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import com.example.cinema.common.api.EntityTagParser;
 import com.example.cinema.common.error.ApiProblemFactory;
+import com.example.cinema.common.error.CreatorRoleRequiredException;
 import com.example.cinema.common.error.ForbiddenException;
 import com.example.cinema.common.error.GlobalExceptionHandler;
 import com.example.cinema.common.error.IdempotencyConflictException;
 import com.example.cinema.common.error.InvalidInputException;
 import com.example.cinema.common.error.InvalidStateException;
 import com.example.cinema.common.error.OptimisticConcurrencyConflictException;
+import com.example.cinema.common.error.ProgramNameExistsException;
+import com.example.cinema.common.error.ProgramRoleExistsException;
+import com.example.cinema.common.error.ProgramRoleNotFoundException;
 import com.example.cinema.common.error.ProblemResponseWriter;
+import com.example.cinema.common.error.RoleConflictException;
 import com.example.cinema.common.infrastructure.CorrelationIdFilter;
 import com.example.cinema.common.ratelimit.InProcessRateLimiter;
 import com.example.cinema.common.ratelimit.RateLimitDecision;
@@ -190,7 +195,7 @@ class ProgramControllerWebTest {
         assertUpdateError("announced", 409, "INVALID_STATE");
         when(service.update(eq(PROGRAM_ID), eq(2L), any(), eq("stale")))
                 .thenThrow(new OptimisticConcurrencyConflictException());
-        assertUpdateError("stale", 409, "OPTIMISTIC_CONCURRENCY_CONFLICT");
+        assertUpdateError("stale", 409, "CONCURRENT_MODIFICATION");
     }
 
     @Test
@@ -213,18 +218,38 @@ class ProgramControllerWebTest {
                 .andExpect(jsonPath("$.errorCode").value("INVALID_IF_MATCH"));
     }
 
-    @Test
-    void rejectsReadOnlyProgramFieldsOnPatch() throws Exception {
+    @ParameterizedTest
+    @MethodSource("readOnlyUpdateBodies")
+    void rejectsEveryReadOnlyProgramFieldOnPatch(String body) throws Exception {
         mockMvc.perform(patch("/api/v1/programs/{id}", PROGRAM_ID)
                         .with(user("alice"))
                         .header(HttpHeaders.IF_MATCH, "\"2\"")
                         .header("Idempotency-Key", "key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"state\":\"ANNOUNCED\"}"))
+                        .content(body))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("MALFORMED_REQUEST"));
         verify(service, org.mockito.Mockito.never()).update(
                 any(), org.mockito.ArgumentMatchers.anyLong(), any(), any());
+    }
+
+    @Test
+    void requiresIdempotencyKeyOnUpdateAndRoleAddition() throws Exception {
+        mockMvc.perform(patch("/api/v1/programs/{id}", PROGRAM_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"description\":\"Updated\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("MISSING_REQUIRED_HEADER"));
+
+        mockMvc.perform(post("/api/v1/programs/{id}/roles", PROGRAM_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"" + TARGET_ID + "\",\"role\":\"STAFF\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("MISSING_REQUIRED_HEADER"));
     }
 
     @Test
@@ -265,6 +290,34 @@ class ProgramControllerWebTest {
         verify(service).delete(PROGRAM_ID, 1);
     }
 
+    @Test
+    void mapsProgramAndRoleConflictsToStableSafeProblems() throws Exception {
+        when(service.create(any(), eq("duplicate-name"))).thenThrow(new ProgramNameExistsException());
+        mockMvc.perform(post("/api/v1/programs")
+                        .with(user("alice"))
+                        .header("Idempotency-Key", "duplicate-name")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validCreateBody()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PROGRAM_NAME_EXISTS"))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("SQL"))));
+
+        when(service.addRole(eq(PROGRAM_ID), eq(2L), any(), eq("duplicate-role")))
+                .thenThrow(new ProgramRoleExistsException());
+        assertRoleAddError("duplicate-role", "PROGRAM_ROLE_EXISTS");
+        when(service.addRole(eq(PROGRAM_ID), eq(2L), any(), eq("conflicting-role")))
+                .thenThrow(new RoleConflictException());
+        assertRoleAddError("conflicting-role", "ROLE_CONFLICT");
+
+        org.mockito.Mockito.doThrow(new ProgramRoleNotFoundException())
+                .when(service).removeRole(PROGRAM_ID, TARGET_ID, 2);
+        assertRoleRemovalError(404, "PROGRAM_ROLE_NOT_FOUND");
+        org.mockito.Mockito.doThrow(new CreatorRoleRequiredException())
+                .when(service).removeRole(PROGRAM_ID, TARGET_ID, 2);
+        assertRoleRemovalError(409, "CREATOR_PROGRAMMER_REQUIRED");
+    }
+
     private void assertUpdateError(String key, int expectedStatus, String errorCode) throws Exception {
         mockMvc.perform(patch("/api/v1/programs/{id}", PROGRAM_ID)
                         .with(user("alice"))
@@ -272,6 +325,25 @@ class ProgramControllerWebTest {
                         .header("Idempotency-Key", key)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"description\":\"Updated\"}"))
+                .andExpect(status().is(expectedStatus))
+                .andExpect(jsonPath("$.errorCode").value(errorCode));
+    }
+
+    private void assertRoleAddError(String key, String errorCode) throws Exception {
+        mockMvc.perform(post("/api/v1/programs/{id}/roles", PROGRAM_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\"")
+                        .header("Idempotency-Key", key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"" + TARGET_ID + "\",\"role\":\"STAFF\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value(errorCode));
+    }
+
+    private void assertRoleRemovalError(int expectedStatus, String errorCode) throws Exception {
+        mockMvc.perform(delete("/api/v1/programs/{id}/roles/{userId}", PROGRAM_ID, TARGET_ID)
+                        .with(user("alice"))
+                        .header(HttpHeaders.IF_MATCH, "\"2\""))
                 .andExpect(status().is(expectedStatus))
                 .andExpect(jsonPath("$.errorCode").value(errorCode));
     }
@@ -306,6 +378,19 @@ class ProgramControllerWebTest {
                 "{\"name\":\"Festival\",\"description\":\"   \",\"startDate\":\"2027-01-01\",\"endDate\":\"2027-02-01\"}",
                 "{\"name\":\"Festival\",\"description\":\"Description\",\"startDate\":\"\",\"endDate\":\"2027-02-01\"}",
                 "{\"name\":\"Festival\",\"description\":\"Description\",\"startDate\":\"2027-01-01\",\"endDate\":\"\"}");
+    }
+
+    private static Stream<String> readOnlyUpdateBodies() {
+        return Stream.of(
+                "{\"state\":\"ANNOUNCED\"}",
+                "{\"creator\":{\"userId\":\"" + ACTOR_ID + "\"}}",
+                "{\"creatorUserId\":\"" + ACTOR_ID + "\"}",
+                "{\"createdAt\":\"2026-08-15T09:00:00Z\"}",
+                "{\"roles\":[]}",
+                "{\"programId\":\"" + PROGRAM_ID + "\"}",
+                "{\"id\":\"" + PROGRAM_ID + "\"}",
+                "{\"userId\":\"" + ACTOR_ID + "\"}",
+                "{\"version\":3}");
     }
 
     @TestConfiguration(proxyBeanMethods = false)

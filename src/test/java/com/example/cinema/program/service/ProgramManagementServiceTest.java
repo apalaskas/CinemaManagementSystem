@@ -15,6 +15,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -219,9 +220,19 @@ class ProgramManagementServiceTest {
         verify(authorization, org.mockito.Mockito.times(2)).requireProgrammer(PROGRAM_ID);
         assertThat(result.body().name()).isEqualTo("Revised Festival");
         assertThat(result.body().endDate()).isEqualTo(LocalDate.parse("2027-02-03"));
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Map> oldSnapshot = ArgumentCaptor.forClass(Map.class);
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Map> newSnapshot = ArgumentCaptor.forClass(Map.class);
         verify(auditLoggingService).recordUserAction(
                 eq(ACTOR_ID), eq("PROGRAM_DETAILS_UPDATED"), eq("PROGRAM"), eq(PROGRAM_ID),
-                any(), any(), eq(null));
+                oldSnapshot.capture(), newSnapshot.capture(), eq(null));
+        assertThat(oldSnapshot.getValue())
+                .containsEntry("name", "Festival")
+                .containsEntry("endDate", LocalDate.parse("2027-02-01"));
+        assertThat(newSnapshot.getValue())
+                .containsEntry("name", "Revised Festival")
+                .containsEntry("endDate", LocalDate.parse("2027-02-03"));
     }
 
     @Test
@@ -234,6 +245,36 @@ class ProgramManagementServiceTest {
         assertThatThrownBy(() -> service.update(PROGRAM_ID, 0, patch, "key"))
                 .isInstanceOf(ForbiddenException.class);
         verify(idempotencyManager, never()).execute(any(), any(), any(), any());
+        verify(programRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void replaysUpdateAndRejectsAnIdempotencyPayloadMismatchWithoutMutation() {
+        ProgramDetailResponse stored = new ProgramDetailResponse(
+                PROGRAM_ID, "Revised", "Description", LocalDate.parse("2027-01-01"),
+                LocalDate.parse("2027-02-01"), ProgramState.CREATED, NOW, 4,
+                new UserSummaryResponse(ACTOR_ID, "alice", "Alice Programmer"));
+        encodedResponse.set(stored);
+        when(idempotencyManager.execute(eq("PROGRAM.UPDATE"), eq("replay-key"), any(), any()))
+                .thenReturn(new IdempotencyResult(200, "{\"stored\":true}", true));
+        ProgramUpdateRequest replayPatch = new ProgramUpdateRequest();
+        replayPatch.setName("Revised");
+
+        ProgramCommandResult<ProgramDetailResponse> replay =
+                service.update(PROGRAM_ID, 3, replayPatch, "replay-key");
+
+        assertThat(replay.replayed()).isTrue();
+        assertThat(replay.body()).isEqualTo(stored);
+        verify(programRepository, never()).findById(any());
+
+        when(idempotencyManager.execute(eq("PROGRAM.UPDATE"), eq("mismatch-key"), any(), any()))
+                .thenThrow(new IdempotencyConflictException(
+                        "IDEMPOTENCY_KEY_REUSED", "The key was reused.", false));
+        ProgramUpdateRequest mismatchPatch = new ProgramUpdateRequest();
+        mismatchPatch.setDescription("Different");
+        assertThatThrownBy(() -> service.update(
+                PROGRAM_ID, 3, mismatchPatch, "mismatch-key"))
+                .isInstanceOf(IdempotencyConflictException.class);
         verify(programRepository, never()).saveAndFlush(any());
     }
 
@@ -279,6 +320,24 @@ class ProgramManagementServiceTest {
         assertThatThrownBy(() -> service.update(PROGRAM_ID, 0, patch, "key"))
                 .isInstanceOf(ProgramNameExistsException.class);
         verify(programRepository, never()).saveAndFlush(program);
+    }
+
+    @Test
+    void translatesDatabaseNameRaceDuringUpdateToStableConflict() {
+        ProgramEntity program = program(ProgramState.CREATED, 0);
+        when(programRepository.findById(PROGRAM_ID)).thenReturn(Optional.of(program));
+        when(programRepository.existsByNameIgnoreCaseAndIdNot("Festival Two", PROGRAM_ID))
+                .thenReturn(false);
+        when(programRepository.saveAndFlush(program)).thenThrow(
+                new org.springframework.dao.DataIntegrityViolationException("SQL uk_program_name"));
+        ProgramUpdateRequest patch = new ProgramUpdateRequest();
+        patch.setName("Festival Two");
+
+        assertThatThrownBy(() -> service.update(PROGRAM_ID, 0, patch, "race-key"))
+                .isInstanceOf(ProgramNameExistsException.class)
+                .hasMessageNotContaining("SQL");
+        verify(auditLoggingService, never()).recordUserAction(
+                any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -407,6 +466,58 @@ class ProgramManagementServiceTest {
     }
 
     @Test
+    void rejectsRoleAdditionPayloadMismatchAndDatabaseRaceWithoutLeakingDetails() {
+        when(idempotencyManager.execute(eq("PROGRAM.ROLE.ADD"), eq("mismatch-key"), any(), any()))
+                .thenThrow(new IdempotencyConflictException(
+                        "IDEMPOTENCY_KEY_REUSED", "The key was reused.", false));
+
+        assertThatThrownBy(() -> service.addRole(
+                PROGRAM_ID, 1,
+                new ProgramRoleRequest(TARGET_ID, ProgramRoleType.PROGRAMMER),
+                "mismatch-key"))
+                .isInstanceOf(IdempotencyConflictException.class);
+        verify(programRepository, never()).findByIdForUpdate(any());
+
+        ProgramEntity program = program(ProgramState.CREATED, 1);
+        when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(program));
+        when(userRepository.findById(TARGET_ID)).thenReturn(Optional.of(target));
+        when(roleRepository.findRole(PROGRAM_ID, TARGET_ID)).thenReturn(Optional.empty());
+        when(roleRepository.saveAndFlush(any())).thenThrow(
+                new org.springframework.dao.DataIntegrityViolationException("SQL pk_program_role"));
+
+        assertThatThrownBy(() -> service.addRole(
+                PROGRAM_ID, 1,
+                new ProgramRoleRequest(TARGET_ID, ProgramRoleType.PROGRAMMER),
+                "race-key"))
+                .isInstanceOf(RoleConflictException.class)
+                .hasMessageNotContaining("SQL");
+        verify(programRepository, never()).incrementVersion(PROGRAM_ID, 1);
+    }
+
+    @Test
+    void checksProgrammerAuthorizationOnEveryManagementCommandBeforeMutation() {
+        ProgramEntity program = program(ProgramState.CREATED, 0);
+        when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(program));
+        org.mockito.Mockito.doThrow(new ForbiddenException())
+                .when(authorization).requireProgrammer(PROGRAM_ID);
+
+        assertThatThrownBy(() -> service.addRole(
+                PROGRAM_ID, 0,
+                new ProgramRoleRequest(TARGET_ID, ProgramRoleType.PROGRAMMER), "add-key"))
+                .isInstanceOf(ForbiddenException.class);
+        assertThatThrownBy(() -> service.removeRole(PROGRAM_ID, TARGET_ID, 0))
+                .isInstanceOf(ForbiddenException.class);
+        assertThatThrownBy(() -> service.delete(PROGRAM_ID, 0))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(roleRepository, never()).saveAndFlush(any());
+        verify(roleRepository, never()).delete(any());
+        verify(programRepository, never()).delete(any());
+        verify(auditLoggingService, never()).recordUserAction(
+                any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     void rejectsCreatorRemovalAndPermitsNonCreatorRoleRemovalsInTheirAllowedStates() {
         ProgramEntity created = program(ProgramState.CREATED, 0);
         when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(created));
@@ -420,6 +531,9 @@ class ProgramManagementServiceTest {
         when(programRepository.incrementVersion(PROGRAM_ID, 0)).thenReturn(1);
         assertThat(service.removeRole(PROGRAM_ID, TARGET_ID, 0)).isEqualTo(1);
         verify(roleRepository).delete(any(ProgramRoleEntity.class));
+        verify(auditLoggingService).recordUserAction(
+                eq(ACTOR_ID), eq("PROGRAM_ROLE_REMOVED"), eq("PROGRAM_ROLE"), eq(PROGRAM_ID),
+                any(), any(), eq(null));
     }
 
     @Test
@@ -454,6 +568,22 @@ class ProgramManagementServiceTest {
     }
 
     @Test
+    void concealsSubmitterAssignmentFromManagedRoleRemoval() {
+        ProgramEntity created = program(ProgramState.CREATED, 0);
+        when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(created));
+        when(roleRepository.findRole(PROGRAM_ID, TARGET_ID)).thenReturn(Optional.of(
+                new ProgramRoleEntity(created, target, ProgramRoleType.SUBMITTER, NOW, null)));
+
+        assertThatThrownBy(() -> service.removeRole(PROGRAM_ID, TARGET_ID, 0))
+                .isInstanceOf(ProgramRoleNotFoundException.class)
+                .extracting(error -> ((ProgramRoleNotFoundException) error).errorCode())
+                .isEqualTo("PROGRAM_ROLE_NOT_FOUND");
+        verify(roleRepository, never()).delete(any());
+        verify(auditLoggingService, never()).recordUserAction(
+                any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     void deletesOnlyCreatedProgramAfterWritingSafeAuditSnapshot() {
         ProgramEntity created = program(ProgramState.CREATED, 2);
         when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(created));
@@ -485,6 +615,20 @@ class ProgramManagementServiceTest {
     }
 
     @Test
+    void rejectsStaleDeleteAndDoesNotAuditOrDelete() {
+        when(programRepository.findByIdForUpdate(PROGRAM_ID))
+                .thenReturn(Optional.of(program(ProgramState.CREATED, 3)));
+
+        assertThatThrownBy(() -> service.delete(PROGRAM_ID, 2))
+                .isInstanceOf(OptimisticConcurrencyConflictException.class)
+                .extracting(error -> ((OptimisticConcurrencyConflictException) error).errorCode())
+                .isEqualTo("CONCURRENT_MODIFICATION");
+        verify(auditLoggingService, never()).recordUserAction(
+                any(), any(), any(), any(), any(), any(), any());
+        verify(programRepository, never()).delete(any());
+    }
+
+    @Test
     void propagatesAuditFailureSoTransactionalCreationCannotComplete() throws Exception {
         when(programRepository.existsByNameIgnoreCase("Festival 2027")).thenReturn(false);
         when(auditLoggingService.recordUserAction(any(), any(), any(), any(), any(), any(), any()))
@@ -495,6 +639,71 @@ class ProgramManagementServiceTest {
                 .hasMessage("audit unavailable");
         assertThat(ProgramManagementService.class
                 .getMethod("create", ProgramCreateRequest.class, String.class)
+                .isAnnotationPresent(Transactional.class)).isTrue();
+    }
+
+    @Test
+    void auditFailurePreventsRoleVersionBumpAndProgramDeletion() {
+        ProgramEntity created = program(ProgramState.CREATED, 0);
+        when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(created));
+        when(userRepository.findById(TARGET_ID)).thenReturn(Optional.of(target));
+        when(roleRepository.findRole(PROGRAM_ID, TARGET_ID)).thenReturn(Optional.empty());
+        when(auditLoggingService.recordUserAction(any(), any(), any(), any(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("audit unavailable"));
+
+        assertThatThrownBy(() -> service.addRole(
+                PROGRAM_ID, 0,
+                new ProgramRoleRequest(TARGET_ID, ProgramRoleType.PROGRAMMER), "role-key"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("audit unavailable");
+        verify(programRepository, never()).incrementVersion(PROGRAM_ID, 0);
+
+        assertThatThrownBy(() -> service.delete(PROGRAM_ID, 0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("audit unavailable");
+        verify(programRepository, never()).delete(created);
+    }
+
+    @Test
+    void auditFailureAbortsUpdateAndRoleRemovalCommands() {
+        ProgramEntity created = program(ProgramState.CREATED, 0);
+        when(programRepository.findById(PROGRAM_ID)).thenReturn(Optional.of(created));
+        when(programRepository.findByIdForUpdate(PROGRAM_ID)).thenReturn(Optional.of(created));
+        when(roleRepository.findRole(PROGRAM_ID, TARGET_ID)).thenReturn(Optional.of(
+                new ProgramRoleEntity(created, target, ProgramRoleType.STAFF, NOW, actor)));
+        when(auditLoggingService.recordUserAction(any(), any(), any(), any(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("audit unavailable"));
+        ProgramUpdateRequest patch = new ProgramUpdateRequest();
+        patch.setDescription("Updated description");
+
+        assertThatThrownBy(() -> service.update(PROGRAM_ID, 0, patch, "update-key"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("audit unavailable");
+        assertThatThrownBy(() -> service.removeRole(PROGRAM_ID, TARGET_ID, 0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("audit unavailable");
+
+        verify(programRepository).saveAndFlush(created);
+        verify(roleRepository).delete(any(ProgramRoleEntity.class));
+        verify(programRepository, never()).incrementVersion(PROGRAM_ID, 0);
+    }
+
+    @Test
+    void everyProgramMutationDeclaresATransactionBoundary() throws Exception {
+        assertThat(ProgramManagementService.class
+                .getMethod("create", ProgramCreateRequest.class, String.class)
+                .isAnnotationPresent(Transactional.class)).isTrue();
+        assertThat(ProgramManagementService.class
+                .getMethod("update", UUID.class, long.class, ProgramUpdateRequest.class, String.class)
+                .isAnnotationPresent(Transactional.class)).isTrue();
+        assertThat(ProgramManagementService.class
+                .getMethod("addRole", UUID.class, long.class, ProgramRoleRequest.class, String.class)
+                .isAnnotationPresent(Transactional.class)).isTrue();
+        assertThat(ProgramManagementService.class
+                .getMethod("removeRole", UUID.class, UUID.class, long.class)
+                .isAnnotationPresent(Transactional.class)).isTrue();
+        assertThat(ProgramManagementService.class
+                .getMethod("delete", UUID.class, long.class)
                 .isAnnotationPresent(Transactional.class)).isTrue();
     }
 

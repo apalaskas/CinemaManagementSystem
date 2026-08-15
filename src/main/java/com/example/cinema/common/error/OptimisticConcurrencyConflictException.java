@@ -2,7 +2,7 @@ package com.example.cinema.common.error;
 
 public final class OptimisticConcurrencyConflictException extends ConflictException {
     public OptimisticConcurrencyConflictException() {
-        super("OPTIMISTIC_CONCURRENCY_CONFLICT",
+        super("CONCURRENT_MODIFICATION",
                 "The resource changed while the request was being processed.");
     }
 }
