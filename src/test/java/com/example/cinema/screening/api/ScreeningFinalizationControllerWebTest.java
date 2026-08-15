@@ -26,6 +26,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -37,6 +38,7 @@ import com.example.cinema.common.error.ForbiddenException;
 import com.example.cinema.common.error.GlobalExceptionHandler;
 import com.example.cinema.common.error.IdempotencyConflictException;
 import com.example.cinema.common.error.InvalidStateException;
+import com.example.cinema.common.error.OptimisticConcurrencyConflictException;
 import com.example.cinema.common.error.ProblemResponseWriter;
 import com.example.cinema.common.error.SchedulingConflictException;
 import com.example.cinema.common.infrastructure.CorrelationIdFilter;
@@ -178,6 +180,27 @@ class ScreeningFinalizationControllerWebTest {
     }
 
     @Test
+    void rejectsMissingOrBlankRejectionReasonAtTheServiceBoundary() throws Exception {
+        when(finalizationService.decide(eq(SCREENING_ID), eq(3L), any(), eq("missing-reason")))
+                .thenThrow(new com.example.cinema.common.error.FieldValidationException(
+                        "SCREENING_DECISION_INVALID",
+                        "The Screening decision is invalid.",
+                        java.util.List.of(new ApiProblemFactory.FieldErrorDetail(
+                                "reason", "must be nonblank for REJECT"))));
+
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/decision", SCREENING_ID)
+                        .with(user("programmer"))
+                        .header(HttpHeaders.IF_MATCH, "\"3\"")
+                        .header("Idempotency-Key", "missing-reason")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"decision\":\"REJECT\",\"reason\":\"   \"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("SCREENING_DECISION_INVALID"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("reason"))
+                .andExpect(content().string(not(containsString("SQL"))));
+    }
+
+    @Test
     void allThreeCommandsRequireIfMatchAndIdempotencyHeaders() throws Exception {
         mockMvc.perform(post("/api/v1/screenings/{screeningId}/decision", SCREENING_ID)
                         .with(user("programmer"))
@@ -250,6 +273,23 @@ class ScreeningFinalizationControllerWebTest {
                 .thenThrow(new IdempotencyConflictException(
                         "IDEMPOTENCY_KEY_REUSED", "The key was reused.", false));
         assertDecisionError("mismatch", 409, "IDEMPOTENCY_KEY_REUSED");
+
+        when(finalizationService.decide(eq(SCREENING_ID), eq(3L), any(), eq("optimistic")))
+                .thenThrow(new OptimisticConcurrencyConflictException());
+        assertDecisionError("optimistic", 409, "CONCURRENT_MODIFICATION");
+
+        when(finalizationService.schedule(eq(SCREENING_ID), eq(5L), any(), eq("pessimistic")))
+                .thenThrow(new PessimisticLockingFailureException("lock timeout"));
+        mockMvc.perform(post("/api/v1/screenings/{screeningId}/schedule", SCREENING_ID)
+                        .with(user("programmer"))
+                        .header(HttpHeaders.IF_MATCH, "\"5\"")
+                        .header("Idempotency-Key", "pessimistic")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validScheduleBody()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CONCURRENT_MODIFICATION"))
+                .andExpect(content().string(not(containsString("lock timeout"))))
+                .andExpect(content().string(not(containsString("SQL"))));
     }
 
     private void assertDecisionError(String key, int expectedStatus, String code) throws Exception {

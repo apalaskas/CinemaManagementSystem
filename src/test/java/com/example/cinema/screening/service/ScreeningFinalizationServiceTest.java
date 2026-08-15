@@ -38,6 +38,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -244,6 +245,29 @@ class ScreeningFinalizationServiceTest {
     }
 
     @Test
+    void schedulingRequiresProgrammerBeforeIdempotencyAndAgainAfterProgramLock() {
+        when(screeningRepository.findActiveProgramIdById(SCREENING_ID)).thenReturn(Optional.of(PROGRAM_ID));
+        doThrow(new ForbiddenException()).when(authorization).requireProgrammer(PROGRAM_ID);
+        assertThatThrownBy(() -> service.schedule(
+                SCREENING_ID, 0, new ScreeningScheduleRequest("Hall", START, END), "forbidden-schedule"))
+                .isInstanceOf(ForbiddenException.class);
+        verify(idempotencyManager, never()).execute(any(), any(), any(), any());
+
+        org.mockito.Mockito.reset(authorization);
+        when(authorization.currentUser()).thenReturn(identity(PROGRAMMER_ID, "programmer", "Programmer Person"));
+        ProgramEntity program = program(ProgramState.DECISION);
+        ScreeningEntity screening = screening(program, ScreeningState.APPROVED, NOW, 0);
+        allowProgrammer(program, screening);
+        doNothing().doThrow(new ForbiddenException()).when(authorization).requireProgrammer(PROGRAM_ID);
+        assertThatThrownBy(() -> service.schedule(
+                SCREENING_ID, 0, new ScreeningScheduleRequest("Hall", START, END), "changed-schedule-role"))
+                .isInstanceOf(ForbiddenException.class);
+        verify(programRepository).findByIdForUpdate(PROGRAM_ID);
+        verify(screeningRepository, never()).findActiveByIdForUpdate(any());
+        verify(screeningRepository, never()).findSchedulingConflictsForUpdate(any(), any(), any(), any());
+    }
+
+    @Test
     void ownerFinallySubmitsChangedCompleteContentOnceWithoutConflictCheck() {
         ProgramEntity program = program(ProgramState.FINAL_PUBLICATION);
         ScreeningEntity screening = screening(program, ScreeningState.APPROVED, null, 5);
@@ -262,9 +286,21 @@ class ScreeningFinalizationServiceTest {
         verify(authorization, org.mockito.Mockito.times(2)).requireOwner(screening);
         verify(authorization, org.mockito.Mockito.times(2)).requireSubmitter(PROGRAM_ID);
         verify(screeningRepository, never()).findSchedulingConflictsForUpdate(any(), any(), any(), any());
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Map> oldSnapshot = ArgumentCaptor.forClass(Map.class);
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Map> newSnapshot = ArgumentCaptor.forClass(Map.class);
         verify(auditLoggingService).recordUserAction(
                 eq(SUBMITTER_ID), eq("SCREENING_FINAL_SUBMITTED"), eq("SCREENING"), eq(SCREENING_ID),
-                any(), any(), eq(null));
+                oldSnapshot.capture(), newSnapshot.capture(), eq(null));
+        assertThat(oldSnapshot.getValue())
+                .containsEntry("filmTitle", "Film")
+                .containsEntry("finalSubmittedAt", null);
+        assertThat(newSnapshot.getValue())
+                .containsEntry("filmTitle", "Final Film")
+                .containsEntry("candidateAuditoriumName", "New Candidate")
+                .containsEntry("finalSubmittedAt", NOW);
     }
 
     @Test
@@ -298,6 +334,29 @@ class ScreeningFinalizationServiceTest {
                 SCREENING_ID, 0, new ScreeningFinalSubmissionRequest(), "owner-changed"))
                 .isInstanceOf(ForbiddenException.class);
         verify(screeningRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void finalSubmissionRequiresSubmitterRoleBeforeIdempotencyAndAgainAfterProgramLock() {
+        ProgramEntity program = program(ProgramState.FINAL_PUBLICATION);
+        ScreeningEntity screening = screening(program, ScreeningState.APPROVED, null, 0);
+        allowOwner(program, screening);
+        doThrow(new ForbiddenException()).when(authorization).requireSubmitter(PROGRAM_ID);
+        assertThatThrownBy(() -> service.finalSubmit(
+                SCREENING_ID, 0, new ScreeningFinalSubmissionRequest(), "missing-submitter"))
+                .isInstanceOf(ForbiddenException.class);
+        verify(idempotencyManager, never()).execute(any(), any(), any(), any());
+
+        org.mockito.Mockito.reset(authorization);
+        when(authorization.currentUser()).thenReturn(identity(SUBMITTER_ID, "submitter", "Submitter Person"));
+        doNothing().doThrow(new ForbiddenException()).when(authorization).requireSubmitter(PROGRAM_ID);
+        assertThatThrownBy(() -> service.finalSubmit(
+                SCREENING_ID, 0, new ScreeningFinalSubmissionRequest(), "changed-submitter-role"))
+                .isInstanceOf(ForbiddenException.class);
+        verify(programRepository).findByIdForUpdate(PROGRAM_ID);
+        verify(screeningRepository).findActiveByIdForUpdate(SCREENING_ID);
+        verify(screeningRepository, never()).saveAndFlush(any());
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
     }
 
     @ParameterizedTest
@@ -368,9 +427,22 @@ class ScreeningFinalizationServiceTest {
         order.verify(screeningRepository).findSchedulingConflictsForUpdate(
                 SCREENING_ID, "Final Hall", START, END);
         order.verify(screeningRepository).saveAndFlush(screening);
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Map> oldSnapshot = ArgumentCaptor.forClass(Map.class);
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Map> newSnapshot = ArgumentCaptor.forClass(Map.class);
         order.verify(auditLoggingService).recordUserAction(
                 eq(PROGRAMMER_ID), eq("SCREENING_SCHEDULED"), eq("SCREENING"), eq(SCREENING_ID),
-                any(), any(), eq(null));
+                oldSnapshot.capture(), newSnapshot.capture(), eq(null));
+        assertThat(oldSnapshot.getValue())
+                .containsEntry("state", ScreeningState.APPROVED)
+                .containsEntry("candidateAuditoriumName", "Candidate Hall")
+                .containsEntry("finalAuditoriumName", null);
+        assertThat(newSnapshot.getValue())
+                .containsEntry("state", ScreeningState.SCHEDULED)
+                .containsEntry("finalAuditoriumName", "Final Hall")
+                .containsEntry("startTime", START)
+                .containsEntry("endTime", END);
     }
 
     @ParameterizedTest
@@ -452,6 +524,14 @@ class ScreeningFinalizationServiceTest {
                     SCREENING_ID, 0, new ScreeningScheduleRequest("Hall", START, END),
                     "final-schedule-" + finalState))
                     .isInstanceOf(InvalidStateException.class);
+
+            ProgramEntity finalPublication = program(ProgramState.FINAL_PUBLICATION);
+            ScreeningEntity ownerScreening = screening(finalPublication, finalState, NOW, 0);
+            allowOwner(finalPublication, ownerScreening);
+            assertThatThrownBy(() -> service.finalSubmit(
+                    SCREENING_ID, 0, new ScreeningFinalSubmissionRequest(),
+                    "final-submit-" + finalState))
+                    .isInstanceOf(InvalidStateException.class);
         }
     }
 
@@ -514,6 +594,77 @@ class ScreeningFinalizationServiceTest {
     }
 
     @Test
+    void decisionIdempotencyContentIncludesVersionDecisionAndNormalizedNotesOrReason() {
+        ProgramEntity program = program(ProgramState.SCHEDULING);
+        ScreeningEntity screening = screening(program, ScreeningState.REVIEWED, null, 6);
+        allowProgrammer(program, screening);
+
+        service.decide(SCREENING_ID, 6,
+                new ScreeningDecisionRequest(ScreeningDecision.APPROVE, "  Final credits  ", null),
+                "decision-content");
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Map> content = ArgumentCaptor.forClass(Map.class);
+        verify(idempotencyManager).execute(
+                eq(ScreeningFinalizationService.DECISION_OPERATION), eq("decision-content"),
+                content.capture(), any());
+        assertThat(content.getValue())
+                .containsEntry("screeningId", SCREENING_ID)
+                .containsEntry("expectedVersion", 6L)
+                .containsEntry("decision", ScreeningDecision.APPROVE)
+                .containsEntry("conditionalNotes", "Final credits")
+                .containsEntry("reason", null);
+    }
+
+    @Test
+    void finalSubmissionIdempotencyContentDistinguishesOmittedAndSuppliedNormalizedFields() {
+        ProgramEntity program = program(ProgramState.FINAL_PUBLICATION);
+        ScreeningEntity screening = screening(program, ScreeningState.APPROVED, null, 2);
+        allowOwner(program, screening);
+        ScreeningFinalSubmissionRequest request = new ScreeningFinalSubmissionRequest();
+        request.setFilmTitle("  Final Film  ");
+
+        service.finalSubmit(SCREENING_ID, 2, request, "final-content");
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Map> content = ArgumentCaptor.forClass(Map.class);
+        verify(idempotencyManager).execute(
+                eq(ScreeningFinalizationService.FINAL_SUBMISSION_OPERATION), eq("final-content"),
+                content.capture(), any());
+        assertThat(content.getValue())
+                .containsEntry("screeningId", SCREENING_ID)
+                .containsEntry("expectedVersion", 2L)
+                .containsEntry("filmTitleSupplied", true)
+                .containsEntry("filmTitle", "Final Film")
+                .containsEntry("castSupplied", false)
+                .containsEntry("cast", null);
+    }
+
+    @Test
+    void schedulingIdempotencyContentIncludesNormalizedAuditoriumAndExactInterval() {
+        ProgramEntity program = program(ProgramState.DECISION);
+        ScreeningEntity screening = screening(program, ScreeningState.APPROVED, NOW, 8);
+        allowProgrammer(program, screening);
+        when(screeningRepository.findSchedulingConflictsForUpdate(any(), any(), any(), any()))
+                .thenReturn(List.of());
+
+        service.schedule(
+                SCREENING_ID, 8, new ScreeningScheduleRequest("  Main Hall  ", START, END), "schedule-content");
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Map> content = ArgumentCaptor.forClass(Map.class);
+        verify(idempotencyManager).execute(
+                eq(ScreeningFinalizationService.SCHEDULE_OPERATION), eq("schedule-content"),
+                content.capture(), any());
+        assertThat(content.getValue())
+                .containsEntry("screeningId", SCREENING_ID)
+                .containsEntry("expectedVersion", 8L)
+                .containsEntry("finalAuditoriumName", "Main Hall")
+                .containsEntry("startTime", START)
+                .containsEntry("endTime", END);
+    }
+
+    @Test
     void schedulingUsesSerializableIsolationAndPropagatesConcurrentLockConflict() throws Exception {
         Transactional annotation = ScreeningFinalizationService.class.getMethod(
                 "schedule", UUID.class, long.class, ScreeningScheduleRequest.class, String.class)
@@ -529,14 +680,125 @@ class ScreeningFinalizationServiceTest {
         verify(screeningRepository, never()).saveAndFlush(any());
     }
 
-    @Test
-    void optimisticConflictPreventsEveryWorkflowWrite() {
-        ProgramEntity program = program(ProgramState.SCHEDULING);
-        ScreeningEntity screening = screening(program, ScreeningState.REVIEWED, null, 4);
-        allowProgrammer(program, screening);
-        assertThatThrownBy(() -> service.decide(SCREENING_ID, 3, approve(), "stale"))
-                .isInstanceOf(OptimisticConcurrencyConflictException.class);
+    @ParameterizedTest
+    @ValueSource(strings = {"decision", "final", "schedule"})
+    void optimisticConflictPreventsEveryWorkflowWrite(String operation) {
+        ProgramEntity program = switch (operation) {
+            case "decision" -> program(ProgramState.SCHEDULING);
+            case "final" -> program(ProgramState.FINAL_PUBLICATION);
+            case "schedule" -> program(ProgramState.DECISION);
+            default -> throw new AssertionError(operation);
+        };
+        ScreeningEntity screening = switch (operation) {
+            case "decision" -> screening(program, ScreeningState.REVIEWED, null, 4);
+            case "final" -> screening(program, ScreeningState.APPROVED, null, 4);
+            case "schedule" -> screening(program, ScreeningState.APPROVED, NOW, 4);
+            default -> throw new AssertionError(operation);
+        };
+        if (operation.equals("final")) {
+            allowOwner(program, screening);
+        } else {
+            allowProgrammer(program, screening);
+        }
+
+        assertThatThrownBy(() -> {
+            switch (operation) {
+                case "decision" -> service.decide(SCREENING_ID, 3, approve(), "stale-decision");
+                case "final" -> service.finalSubmit(
+                        SCREENING_ID, 3, new ScreeningFinalSubmissionRequest(), "stale-final");
+                case "schedule" -> service.schedule(
+                        SCREENING_ID, 3, new ScreeningScheduleRequest("Hall", START, END), "stale-schedule");
+                default -> throw new AssertionError(operation);
+            }
+        }).isInstanceOf(OptimisticConcurrencyConflictException.class);
         verify(screeningRepository, never()).saveAndFlush(any());
+        verify(screeningRepository, never()).findSchedulingConflictsForUpdate(any(), any(), any(), any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"decision", "final", "schedule"})
+    void successfulWorkflowCommitsAfterLockedWriteAuditAndIdempotencyCompletion(String operation) {
+        ProgramEntity program = switch (operation) {
+            case "decision" -> program(ProgramState.SCHEDULING);
+            case "final" -> program(ProgramState.FINAL_PUBLICATION);
+            case "schedule" -> program(ProgramState.DECISION);
+            default -> throw new AssertionError(operation);
+        };
+        ScreeningEntity screening = switch (operation) {
+            case "decision" -> screening(program, ScreeningState.REVIEWED, null, 0);
+            case "final" -> screening(program, ScreeningState.APPROVED, null, 0);
+            case "schedule" -> screening(program, ScreeningState.APPROVED, NOW, 0);
+            default -> throw new AssertionError(operation);
+        };
+        if (operation.equals("final")) {
+            allowOwner(program, screening);
+        } else {
+            allowProgrammer(program, screening);
+        }
+        when(screeningRepository.findSchedulingConflictsForUpdate(any(), any(), any(), any()))
+                .thenReturn(List.of());
+
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        TransactionStatus status = mock(TransactionStatus.class);
+        when(transactionManager.getTransaction(any())).thenReturn(status);
+        ProxyFactory factory = new ProxyFactory(service);
+        factory.addAdvice(new TransactionInterceptor(
+                transactionManager, new AnnotationTransactionAttributeSource()));
+        ScreeningFinalizationService proxy = (ScreeningFinalizationService) factory.getProxy();
+
+        invoke(proxy, operation, "commit");
+
+        InOrder order = inOrder(programRepository, screeningRepository, auditLoggingService);
+        order.verify(programRepository).findByIdForUpdate(PROGRAM_ID);
+        order.verify(screeningRepository).findActiveByIdForUpdate(SCREENING_ID);
+        if (operation.equals("schedule")) {
+            order.verify(screeningRepository).findSchedulingConflictsForUpdate(
+                    SCREENING_ID, "Hall", START, END);
+        }
+        order.verify(screeningRepository).saveAndFlush(screening);
+        order.verify(auditLoggingService).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+        verify(transactionManager).commit(status);
+        verify(transactionManager, never()).rollback(status);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"decision", "final", "schedule"})
+    void persistenceFailureRollsBackEveryWorkflowBeforeAuditOrIdempotencyCompletion(String operation) {
+        ProgramEntity program = switch (operation) {
+            case "decision" -> program(ProgramState.SCHEDULING);
+            case "final" -> program(ProgramState.FINAL_PUBLICATION);
+            case "schedule" -> program(ProgramState.DECISION);
+            default -> throw new AssertionError(operation);
+        };
+        ScreeningEntity screening = switch (operation) {
+            case "decision" -> screening(program, ScreeningState.REVIEWED, null, 0);
+            case "final" -> screening(program, ScreeningState.APPROVED, null, 0);
+            case "schedule" -> screening(program, ScreeningState.APPROVED, NOW, 0);
+            default -> throw new AssertionError(operation);
+        };
+        if (operation.equals("final")) {
+            allowOwner(program, screening);
+        } else {
+            allowProgrammer(program, screening);
+        }
+        when(screeningRepository.findSchedulingConflictsForUpdate(any(), any(), any(), any()))
+                .thenReturn(List.of());
+        when(screeningRepository.saveAndFlush(screening))
+                .thenThrow(new DataAccessResourceFailureException("screening write failed"));
+
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        TransactionStatus status = mock(TransactionStatus.class);
+        when(transactionManager.getTransaction(any())).thenReturn(status);
+        ProxyFactory factory = new ProxyFactory(service);
+        factory.addAdvice(new TransactionInterceptor(
+                transactionManager, new AnnotationTransactionAttributeSource()));
+        ScreeningFinalizationService proxy = (ScreeningFinalizationService) factory.getProxy();
+
+        assertThatThrownBy(() -> invoke(proxy, operation, "write-failure"))
+                .isInstanceOf(DataAccessResourceFailureException.class);
+        verify(auditLoggingService, never()).recordUserAction(any(), any(), any(), any(), any(), any(), any());
+        verify(transactionManager).rollback(status);
+        verify(transactionManager, never()).commit(status);
     }
 
     @ParameterizedTest
@@ -587,11 +849,26 @@ class ScreeningFinalizationServiceTest {
         verify(transactionManager, never()).commit(status);
     }
 
-    @Test
-    void idempotencyCompletionFailureRollsBackSchedulingAfterAudit() {
-        ProgramEntity program = program(ProgramState.DECISION);
-        ScreeningEntity screening = screening(program, ScreeningState.APPROVED, NOW, 0);
-        allowProgrammer(program, screening);
+    @ParameterizedTest
+    @ValueSource(strings = {"decision", "final", "schedule"})
+    void idempotencyCompletionFailureRollsBackEveryWorkflowAfterAudit(String operation) {
+        ProgramEntity program = switch (operation) {
+            case "decision" -> program(ProgramState.SCHEDULING);
+            case "final" -> program(ProgramState.FINAL_PUBLICATION);
+            case "schedule" -> program(ProgramState.DECISION);
+            default -> throw new AssertionError(operation);
+        };
+        ScreeningEntity screening = switch (operation) {
+            case "decision" -> screening(program, ScreeningState.REVIEWED, null, 0);
+            case "final" -> screening(program, ScreeningState.APPROVED, null, 0);
+            case "schedule" -> screening(program, ScreeningState.APPROVED, NOW, 0);
+            default -> throw new AssertionError(operation);
+        };
+        if (operation.equals("final")) {
+            allowOwner(program, screening);
+        } else {
+            allowProgrammer(program, screening);
+        }
         when(screeningRepository.findSchedulingConflictsForUpdate(any(), any(), any(), any()))
                 .thenReturn(List.of());
         doAnswer(invocation -> {
@@ -608,11 +885,11 @@ class ScreeningFinalizationServiceTest {
                 transactionManager, new AnnotationTransactionAttributeSource()));
         ScreeningFinalizationService proxy = (ScreeningFinalizationService) factory.getProxy();
 
-        assertThatThrownBy(() -> proxy.schedule(
-                SCREENING_ID, 0, new ScreeningScheduleRequest("Hall", START, END), "idem-failure"))
+        assertThatThrownBy(() -> invoke(proxy, operation, "idem-failure"))
                 .isInstanceOf(IllegalStateException.class);
         verify(auditLoggingService).recordUserAction(any(), any(), any(), any(), any(), any(), any());
         verify(transactionManager).rollback(status);
+        verify(transactionManager, never()).commit(status);
     }
 
     @Test
@@ -634,6 +911,17 @@ class ScreeningFinalizationServiceTest {
                 SCREENING_ID, 0, new ScreeningFinalSubmissionRequest(), key))
                 .isInstanceOf(InvalidStateException.class);
         verify(screeningRepository, never()).saveAndFlush(screening);
+    }
+
+    private static void invoke(ScreeningFinalizationService target, String operation, String key) {
+        switch (operation) {
+            case "decision" -> target.decide(SCREENING_ID, 0, approve(), key + "-decision");
+            case "final" -> target.finalSubmit(
+                    SCREENING_ID, 0, new ScreeningFinalSubmissionRequest(), key + "-final");
+            case "schedule" -> target.schedule(
+                    SCREENING_ID, 0, new ScreeningScheduleRequest("Hall", START, END), key + "-schedule");
+            default -> throw new AssertionError(operation);
+        }
     }
 
     private void allowProgrammer(ProgramEntity program, ScreeningEntity screening) {

@@ -52,6 +52,18 @@ class ProgramManagementMigrationContractTest {
                 .contains("REFERENCES cms_user (user_id) ON DELETE SET NULL");
     }
 
+    @Test
+    void v1MakesFinalAuditoriumEqualityCaseInsensitiveAndIndexesTheConflictRange() throws IOException {
+        String screening = tableDefinition(migration(), "screening", "review");
+
+        assertThat(screening)
+                .contains("final_auditorium_name VARCHAR(255) NULL")
+                .contains("INDEX idx_screening_scheduling_conflict (\n"
+                        + "        state, deleted_at, final_auditorium_name, start_time, end_time, screening_id\n"
+                        + "    )")
+                .contains("COLLATE = utf8mb4_0900_ai_ci");
+    }
+
     private String migration() throws IOException {
         try (InputStream input = getClass().getResourceAsStream(
                 "/db/migration/V1__create_domain_schema.sql")) {
