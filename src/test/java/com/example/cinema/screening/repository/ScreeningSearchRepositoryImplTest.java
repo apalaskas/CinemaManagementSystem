@@ -110,14 +110,21 @@ class ScreeningSearchRepositoryImplTest {
     }
 
     @Test
-    void programmerVisibilityIsUnrestrictedOnlyAfterSameProgramRoleResolution() {
+    void programmerVisibilityIsRevalidatedByASameProgramDatabaseRolePredicate() {
         var plan = ScreeningSearchRepositoryImpl.queryPlan(
                 PROGRAM_ID, criteria(ScreeningSearchView.GENERAL),
                 USER_ID, ProgramRoleType.PROGRAMMER, false, null);
 
-        assertThat(plan.jpql()).contains("s.deletedAt is null and 1 = 1")
-                .doesNotContain("announcedState", "scheduledState");
-        assertThat(plan.parameters()).containsEntry("programId", PROGRAM_ID);
+        assertThat(plan.jpql())
+                .contains("s.deletedAt is null")
+                .contains("visibilityRole.id.programId = s.program.id")
+                .contains("visibilityRole.id.userId = :requesterUserId")
+                .contains("visibilityRole.role = :requesterRole")
+                .doesNotContain("s.handler.id = :requesterUserId", "s.submitter.id = :requesterUserId");
+        assertThat(plan.parameters())
+                .containsEntry("programId", PROGRAM_ID)
+                .containsEntry("requesterUserId", USER_ID)
+                .containsEntry("requesterRole", ProgramRoleType.PROGRAMMER);
     }
 
     @Test
@@ -131,11 +138,15 @@ class ScreeningSearchRepositoryImplTest {
 
         assertThat(staff.jpql())
                 .contains("s.program.state = :announcedState and s.state = :scheduledState")
-                .contains("or s.handler.id = :requesterUserId")
+                .contains("s.handler.id = :requesterUserId")
+                .contains("visibilityRole.id.programId = s.program.id")
                 .doesNotContain("submitter.id = :requesterUserId");
         assertThat(submitter.jpql())
-                .contains("or s.submitter.id = :requesterUserId")
+                .contains("s.submitter.id = :requesterUserId")
+                .contains("visibilityRole.id.programId = s.program.id")
                 .doesNotContain("handler.id = :requesterUserId");
+        assertThat(staff.parameters()).containsEntry("requesterRole", ProgramRoleType.STAFF);
+        assertThat(submitter.parameters()).containsEntry("requesterRole", ProgramRoleType.SUBMITTER);
     }
 
     @Test
@@ -164,6 +175,7 @@ class ScreeningSearchRepositoryImplTest {
         assertThat(data.jpql()).contains("join fetch s.program", "join fetch s.submitter")
                 .contains("left join fetch s.handler", "order by");
         assertThat(count.parameters()).isEqualTo(data.parameters());
+        assertThat(predicateOf(count.jpql())).isEqualTo(predicateOf(data.jpql()));
     }
 
     @Test
@@ -196,7 +208,8 @@ class ScreeningSearchRepositoryImplTest {
 
         assertThat(plan.jpql())
                 .contains("s.deletedAt is null")
-                .contains("or s.submitter.id = :requesterUserId")
+                .contains("s.submitter.id = :requesterUserId")
+                .contains("visibilityRole.id.programId = s.program.id")
                 .contains("s.id = :screeningId")
                 .doesNotContain("order by");
         assertThat(plan.parameters()).containsEntry("screeningId", screeningId);
@@ -204,6 +217,12 @@ class ScreeningSearchRepositoryImplTest {
 
     private static ScreeningSearchCriteria criteria(ScreeningSearchView view) {
         return new ScreeningSearchCriteria(List.of(), List.of(), List.of(), null, null, view);
+    }
+
+    private static String predicateOf(String jpql) {
+        String predicate = jpql.substring(jpql.indexOf(" where ") + " where ".length());
+        int orderIndex = predicate.indexOf(" order by ");
+        return orderIndex < 0 ? predicate : predicate.substring(0, orderIndex);
     }
 
     private static Stream<Arguments> individualTextFilters() {

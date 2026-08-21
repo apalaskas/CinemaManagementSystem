@@ -52,6 +52,7 @@ import com.example.cinema.user.domain.UserEntity;
 class ScreeningSearchVisibilityServiceTest {
 
     private static final UUID PROGRAM_ID = UUID.fromString("cccccccc-cccc-cccc-cccc-cccccccccccc");
+    private static final UUID OTHER_PROGRAM_ID = UUID.fromString("ffffffff-ffff-ffff-ffff-ffffffffffff");
     private static final UUID SCREENING_ID = UUID.fromString("dddddddd-dddd-dddd-dddd-dddddddddddd");
     private static final UUID PUBLIC_ID = UUID.fromString("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
     private static final UUID REQUESTER_ID = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
@@ -127,6 +128,7 @@ class ScreeningSearchVisibilityServiceTest {
         assertThat(anonymous.totalElements()).isEqualTo(1);
         assertThat(anonymous.content()).singleElement().isInstanceOfSatisfying(
                 PublicScreeningResponse.class, response -> {
+                    assertThat(response.programId()).isEqualTo(PROGRAM_ID);
                     assertThat(response.finalAuditoriumName()).isEqualTo("Main Hall");
                     assertThat(response.filmTitle()).isEqualTo("Dark Night");
                 });
@@ -186,6 +188,28 @@ class ScreeningSearchVisibilityServiceTest {
     }
 
     @Test
+    void assignedStaffSeesReviewBeforeAProgrammerDecision() {
+        ScreeningEntity assigned = completeDraft(SCREENING_ID, program, other);
+        assigned.submit();
+        assigned.assignHandler(requester);
+        assigned.markReviewed();
+        ReviewEntity review = new ReviewEntity(UUID.randomUUID(), assigned, requester,
+                new BigDecimal("8.50"), "Detailed comments", NOW);
+        stubRole(ProgramRoleType.STAFF);
+        when(screeningRepository.searchVisible(
+                eq(PROGRAM_ID), any(), eq(REQUESTER_ID), eq(ProgramRoleType.STAFF), eq(0), eq(20)))
+                .thenReturn(new ScreeningSearchPage(List.of(assigned), 1));
+        when(reviewRepository.findAllWithStaffByScreeningIds(List.of(SCREENING_ID)))
+                .thenReturn(List.of(review));
+
+        assertThat(service.searchScreenings(
+                PROGRAM_ID, parameters(null, null, null, 0, null)).content())
+                .singleElement().isInstanceOfSatisfying(
+                        FullScreeningResponse.class,
+                        full -> assertThat(full.review().numericScore()).isEqualByComparingTo("8.50"));
+    }
+
+    @Test
     void submitterGetsMixedOwnedFullAndPublicAndReviewOnlyAfterDecision() {
         announce(program);
         ScreeningEntity owned = completeDraft(SCREENING_ID, program, requester);
@@ -214,6 +238,46 @@ class ScreeningSearchVisibilityServiceTest {
                     assertThat(full.review().numericScore()).isEqualByComparingTo("8.50");
                     assertThat(full.review().detailedComments()).isEqualTo("Detailed comments");
                 });
+    }
+
+    @Test
+    void submitterReviewAlsoBecomesVisibleAfterRejection() {
+        ScreeningEntity owned = completeDraft(SCREENING_ID, program, requester);
+        owned.submit();
+        owned.assignHandler(other);
+        owned.markReviewed();
+        ReviewEntity review = new ReviewEntity(UUID.randomUUID(), owned, other,
+                new BigDecimal("4.25"), "Not ready", NOW);
+        owned.rejectReviewed("Insufficient quality");
+        stubRole(ProgramRoleType.SUBMITTER);
+        when(screeningRepository.searchVisible(
+                eq(PROGRAM_ID), any(), eq(REQUESTER_ID), eq(ProgramRoleType.SUBMITTER), eq(0), eq(20)))
+                .thenReturn(new ScreeningSearchPage(List.of(owned), 1));
+        when(reviewRepository.findAllWithStaffByScreeningIds(List.of(SCREENING_ID)))
+                .thenReturn(List.of(review));
+
+        assertThat(service.searchScreenings(
+                PROGRAM_ID, parameters(null, null, null, 0, null)).content())
+                .singleElement().isInstanceOfSatisfying(
+                        FullScreeningResponse.class,
+                        full -> assertThat(full.review().numericScore()).isEqualByComparingTo("4.25"));
+    }
+
+    @Test
+    void projectionFailsClosedBeforeReviewLoadingForARowFromAnotherProgram() {
+        ProgramEntity otherProgram = new ProgramEntity(OTHER_PROGRAM_ID, other, "Other Festival", "Description",
+                LocalDate.parse("2027-03-01"), LocalDate.parse("2027-04-01"), NOW);
+        ScreeningEntity foreignDraft = completeDraft(SCREENING_ID, otherProgram, other);
+        stubRole(ProgramRoleType.PROGRAMMER);
+        when(screeningRepository.searchVisible(
+                eq(PROGRAM_ID), any(), eq(REQUESTER_ID), eq(ProgramRoleType.PROGRAMMER), eq(0), eq(20)))
+                .thenReturn(new ScreeningSearchPage(List.of(foreignDraft), 1));
+
+        assertThatThrownBy(() -> service.searchScreenings(
+                PROGRAM_ID, parameters(null, null, null, 0, null)))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verify(reviewRepository, never()).findAllWithStaffByScreeningIds(any());
     }
 
     @Test
@@ -262,6 +326,22 @@ class ScreeningSearchVisibilityServiceTest {
                 .thenReturn(Optional.of(screening));
 
         assertThat(service.viewScreening(SCREENING_ID)).isInstanceOf(PublicScreeningResponse.class);
+        verify(reviewRepository, never()).findAllWithStaffByScreeningIds(any());
+    }
+
+    @Test
+    void ordinaryAuthenticatedDirectViewUsesTheVisitorProjection() {
+        announce(program);
+        ScreeningEntity screening = scheduled(SCREENING_ID, program, other, other);
+        when(currentUser.optional()).thenReturn(Optional.of(identity()));
+        when(screeningRepository.findActiveProgramIdById(SCREENING_ID)).thenReturn(Optional.of(PROGRAM_ID));
+        when(roleRepository.findRole(PROGRAM_ID, REQUESTER_ID)).thenReturn(Optional.empty());
+        when(screeningRepository.findVisibleDetail(SCREENING_ID, REQUESTER_ID, null))
+                .thenReturn(Optional.of(screening));
+
+        assertThat(service.viewScreening(SCREENING_ID)).isInstanceOfSatisfying(
+                PublicScreeningResponse.class,
+                response -> assertThat(response.programId()).isEqualTo(PROGRAM_ID));
         verify(reviewRepository, never()).findAllWithStaffByScreeningIds(any());
     }
 

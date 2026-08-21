@@ -114,7 +114,7 @@ public class SearchAndVisibilityService {
         ScreeningSearchPage page = screeningRepository.searchVisible(
                 programId, search.criteria(), requesterUserId, requesterRole, search.page(), search.size());
         List<ScreeningViewResponse> content = projectScreenings(
-                page.screenings(), requesterUserId, requesterRole);
+                page.screenings(), programId, requesterUserId, requesterRole);
         long pages = page.totalElements() == 0 ? 0 : ((page.totalElements() - 1) / search.size()) + 1;
         return new PageResponse<>(search.page(), search.size(), page.totalElements(),
                 (int) Math.min(Integer.MAX_VALUE, pages), content);
@@ -129,7 +129,7 @@ public class SearchAndVisibilityService {
         ScreeningEntity screening = screeningRepository.findVisibleDetail(
                 screeningId, requesterUserId, requesterRole)
                 .orElseThrow(ResourceNotFoundException::new);
-        return projectScreenings(List.of(screening), requesterUserId, requesterRole).getFirst();
+        return projectScreenings(List.of(screening), programId, requesterUserId, requesterRole).getFirst();
     }
 
     private ProgramRoleType roleFor(UUID programId, UUID requesterUserId) {
@@ -142,10 +142,17 @@ public class SearchAndVisibilityService {
 
     private List<ScreeningViewResponse> projectScreenings(
             List<ScreeningEntity> screenings,
+            UUID authorizedProgramId,
             UUID requesterUserId,
             ProgramRoleType requesterRole) {
         if (screenings.isEmpty()) {
             return List.of();
+        }
+        boolean containsUnavailableScreening = screenings.stream().anyMatch(screening ->
+                screening.getDeletedAt() != null
+                        || !authorizedProgramId.equals(screening.getProgram().getId()));
+        if (containsUnavailableScreening) {
+            throw new ResourceNotFoundException();
         }
         List<UUID> fullIds = screenings.stream()
                 .filter(screening -> isFull(screening, requesterUserId, requesterRole))
@@ -157,14 +164,12 @@ public class SearchAndVisibilityService {
         }
         List<ScreeningViewResponse> result = new ArrayList<>(screenings.size());
         for (ScreeningEntity screening : screenings) {
-            if (screening.getDeletedAt() != null) {
-                throw new ResourceNotFoundException();
-            }
             if (isFull(screening, requesterUserId, requesterRole)) {
                 result.add(fullScreening(screening, reviews.get(screening.getId()), requesterRole));
             } else if (isPublic(screening)) {
                 result.add(new PublicScreeningResponse(
-                        screening.getId(), screening.getFilmTitle(), screening.getGenre(),
+                        screening.getId(), screening.getProgram().getId(),
+                        screening.getFilmTitle(), screening.getGenre(),
                         screening.getStartTime(), screening.getEndTime(), screening.getFinalAuditoriumName()));
             } else {
                 throw new ResourceNotFoundException();

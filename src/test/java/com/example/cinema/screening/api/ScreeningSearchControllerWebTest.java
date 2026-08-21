@@ -126,6 +126,7 @@ class ScreeningSearchControllerWebTest {
         mockMvc.perform(get("/api/v1/screenings/{screeningId}", SCREENING_ID))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.screeningId").value(SCREENING_ID.toString()))
+                .andExpect(jsonPath("$.programId").value(PROGRAM_ID.toString()))
                 .andExpect(jsonPath("$.filmTitle").value("Dark Night"))
                 .andExpect(jsonPath("$.genre").value("Drama"))
                 .andExpect(jsonPath("$.finalAuditoriumName").value("Main Hall"))
@@ -186,7 +187,7 @@ class ScreeningSearchControllerWebTest {
     }
 
     private static PublicScreeningResponse publicResponse() {
-        return new PublicScreeningResponse(SCREENING_ID, "Dark Night", "Drama",
+        return new PublicScreeningResponse(SCREENING_ID, PROGRAM_ID, "Dark Night", "Drama",
                 Instant.parse("2027-01-10T10:00:00Z"), Instant.parse("2027-01-10T12:00:00Z"),
                 "Main Hall");
     }

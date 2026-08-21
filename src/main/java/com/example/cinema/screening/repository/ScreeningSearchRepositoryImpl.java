@@ -110,19 +110,22 @@ public class ScreeningSearchRepositoryImpl implements ScreeningSearchRepository 
             Map<String, Object> parameters,
             UUID requesterUserId,
             ProgramRoleType requesterRole) {
-        if (requesterRole == ProgramRoleType.PROGRAMMER && requesterUserId != null) {
-            jpql.append("1 = 1");
-            return;
-        }
         jpql.append("((s.program.state = :announcedState and s.state = :scheduledState)");
         parameters.put("announcedState", ProgramState.ANNOUNCED);
         parameters.put("scheduledState", ScreeningState.SCHEDULED);
-        if (requesterRole == ProgramRoleType.STAFF && requesterUserId != null) {
-            jpql.append(" or s.handler.id = :requesterUserId");
+        if (requesterUserId != null && requesterRole != null) {
             parameters.put("requesterUserId", requesterUserId);
-        } else if (requesterRole == ProgramRoleType.SUBMITTER && requesterUserId != null) {
-            jpql.append(" or s.submitter.id = :requesterUserId");
-            parameters.put("requesterUserId", requesterUserId);
+            parameters.put("requesterRole", requesterRole);
+            jpql.append(" or (");
+            if (requesterRole == ProgramRoleType.STAFF) {
+                jpql.append("s.handler.id = :requesterUserId and ");
+            } else if (requesterRole == ProgramRoleType.SUBMITTER) {
+                jpql.append("s.submitter.id = :requesterUserId and ");
+            }
+            jpql.append("exists (select visibilityRole.id.programId from ProgramRoleEntity visibilityRole ")
+                    .append("where visibilityRole.id.programId = s.program.id ")
+                    .append("and visibilityRole.id.userId = :requesterUserId ")
+                    .append("and visibilityRole.role = :requesterRole))");
         }
         jpql.append(')');
     }

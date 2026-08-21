@@ -6,6 +6,8 @@ public sealed interface ScreeningViewResponse permits PublicScreeningResponse, F
 
     UUID screeningId();
 
+    UUID programId();
+
     String filmTitle();
 
     String genre();
